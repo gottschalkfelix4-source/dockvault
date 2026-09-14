@@ -310,12 +310,16 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
     stopped_by_us = False
     if opts["stop_container"] and was_running and artifacts:
         ctx.step(f"Container '{container_name}' wird angehalten (konsistente Sicherung)", 8)
+        # Erst vermerken, dann stoppen. "docker stop" darf bis zu 60 Sekunden
+        # dauern; stirbt DockVault in diesem Fenster, waere der Container ohne
+        # Vermerk gestoppt - und bliebe unbemerkt unten.
+        _note_stopped(container_name, True)
         try:
             docker_api.control(container_name, "stop", timeout=60)
             stopped_by_us = True
-            _note_stopped(container_name, True)
             events.publish("container.changed", {"name": container_name, "state": "exited"})
         except Exception as exc:  # noqa: BLE001
+            _note_stopped(container_name, False)
             ctx.log(f"Konnte Container nicht stoppen, sichere im laufenden Zustand: {exc}", "warn")
 
     saved: list[dict[str, Any]] = []
@@ -643,7 +647,17 @@ def restart_orphaned_containers() -> dict[str, Any]:
                                  f"und wurde wieder gestartet", level="warn", container=name)
         except Exception as exc:  # noqa: BLE001
             failed.append({"container": name, "error": str(exc)})
-    path.unlink(missing_ok=True)
+            db.add_event("container.recovery_failed",
+                         f"{name} konnte nach einem abgebrochenen Backup nicht gestartet "
+                         f"werden: {exc}", level="error", container=name)
+
+    # Was sich nicht starten liess, bleibt vermerkt - der naechste Start
+    # versucht es erneut, statt den Container stillschweigend aufzugeben.
+    still_pending = [entry["container"] for entry in failed]
+    if still_pending:
+        path.write_text(json.dumps(sorted(still_pending)), "utf-8")
+    else:
+        path.unlink(missing_ok=True)
     return {"restarted": restarted, "failed": failed}
 
 
