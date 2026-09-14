@@ -1,6 +1,6 @@
 import { api } from '../api.js';
-import { html, raw, bytes, ago, date, esc, on, stateLabel, statusClass, shortImage }
-  from '../util.js';
+import { html, raw, bytes, ago, date, esc, on, stateLabel, statusClass, statusLabel,
+         shortImage } from '../util.js';
 import { modal, toast, confirm } from '../components.js';
 import { openRestoreWizard } from './restore.js';
 
@@ -192,19 +192,41 @@ async function showContainerDetail(name) {
             <tbody>
               ${plan.artifacts.map((a) => html`
                 <tr>
-                  <td><span class="badge">${a.kind}</span></td>
+                  <td><span class="badge ok">${a.kind}</span></td>
                   <td class="mono">${a.source}</td>
                   <td class="mono">${a.destination}</td>
                   <td class="mono nowrap">${bytes(a.estimated_bytes)}</td>
                   <td class="mono">${String(a.files)}</td>
                 </tr>`)}
               ${plan.artifacts.length ? '' : raw(`<tr><td colspan="5" class="muted">
-                Keine sicherungsfähigen Mounts — es werden nur Konfiguration und Template gesichert.</td></tr>`)}
+                Keine Konfigurationspfade — es werden nur Container-Konfiguration
+                und Template gesichert.</td></tr>`)}
             </tbody>
           </table>
         </div>
         <p class="muted" style="margin:0;font-size:12.5px">
-          Geschätztes Volumen: <strong>${bytes(plan.estimated_bytes)}</strong> vor Komprimierung</p>`)}
+          Geschätztes Volumen: <strong>${bytes(plan.estimated_bytes)}</strong> vor Komprimierung</p>
+
+        ${(plan.skipped || []).length ? raw(html`
+          <h3 style="margin-top:6px">Bewusst übersprungen</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Art</th><th>Host-Pfad</th><th>Im Container</th>
+                <th>Grund</th></tr></thead>
+              <tbody>
+                ${plan.skipped.map((a) => html`
+                  <tr style="opacity:.7">
+                    <td><span class="badge warn">${a.kind}</span></td>
+                    <td class="mono">${a.source}</td>
+                    <td class="mono">${a.destination}</td>
+                    <td class="muted">${a.reason}</td>
+                  </tr>`)}
+              </tbody>
+            </table>
+          </div>
+          <p class="muted" style="margin:0;font-size:12.5px">
+            Datenpfade werden nicht mitgesichert. Soll einer davon doch hinein, trag ihn
+            unter <a href="#/settings">Einstellungen → „Zusätzlich sichern"</a> ein.</p>`) : ''}`)}
 
       <h3>Netzwerk &amp; Ports</h3>
       <div class="row">
@@ -222,7 +244,7 @@ async function showContainerDetail(name) {
                 <tr>
                   <td class="nowrap">${date(b.created_at)}</td>
                   <td class="mono nowrap">${bytes(b.archive_bytes)}</td>
-                  <td><span class="badge ${statusClass(b.status)}">${b.status}</span></td>
+                  <td><span class="badge ${statusClass(b.status)}">${statusLabel(b.status)}</span></td>
                   <td><button class="btn sm" data-restore-ref="${b.id}">Wiederherstellen</button></td>
                 </tr>`)}
             </tbody>

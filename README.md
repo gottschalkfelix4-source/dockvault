@@ -67,6 +67,33 @@ docker build -t dockvault:latest .
 
 Die Web-Oberfläche läuft danach auf `http://<unraid-ip>:8070`.
 
+## Sicherungsumfang: Konfiguration statt Mediathek
+
+Ein Container mountet typischerweise zweierlei: seine **Konfiguration** unter `appdata`
+und die **Nutzdaten**, die er verwaltet — Plex' Medienbibliothek, Immichs Fotos,
+Downloads. Nur das Erste gehört in ein Container-Backup. Das Zweite ist um
+Größenordnungen größer und wird sinnvollerweise anders gesichert.
+
+DockVault sichert deshalb standardmäßig **nur**:
+
+* Bind-Mounts unterhalb von `appdata` (einstellbar unter *Was als Konfiguration gilt*)
+* benannte Docker-Volumes
+* die Container-Konfiguration und das Unraid-Template
+
+Alles andere wird übersprungen und im Protokoll sowie im Manifest namentlich aufgeführt.
+Die Container-Detailansicht zeigt beide Listen nebeneinander: was gesichert wird und was
+bewusst fehlt — samt Begründung.
+
+**Wichtig:** Übersprungen wird nur das *Archivieren der Daten*. `inspect.json` und das
+Template behalten **alle** Mounts. Ein wiederhergestellter Plex-Container ist also
+vollständig verdrahtet und findet seine Mediathek an Ort und Stelle wieder — sie wurde
+ja nie angefasst.
+
+Zwei Stellschrauben in den Einstellungen:
+
+* **Zusätzlich sichern** — einzelne Pfade außerhalb von `appdata` doch mitnehmen
+* **Sicherungsumfang: Alle Mounts** — alles archivieren (Vorsicht bei Medienshares)
+
 ## Backup-Ziel: lokal oder SMB
 
 Unter **Einstellungen → Backup-Ziel** wird festgelegt, wohin die Archive geschrieben werden.

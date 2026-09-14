@@ -41,6 +41,14 @@ DEFAULTS: dict[str, Any] = {
     "smb_domain": "",
     "smb_version": "3.0",            # auto | 3.1.1 | 3.0 | 2.1 | 1.0
     "smb_options": "",               # zusaetzliche mount-Optionen
+    # Sicherungsumfang: was von den Mounts eines Containers gesichert wird
+    "mount_scope": "appdata",        # appdata = nur Konfiguration | all = alle Mounts
+    "appdata_roots": [               # Was als Konfiguration gilt
+        "/mnt/user/appdata",
+        "/mnt/cache/appdata",
+        "/mnt/user0/appdata",
+    ],
+    "include_extra_paths": [],       # Zusaetzlich sichern, obwohl kein appdata
     # Sicherung
     "compression": "zstd",          # zstd | gzip | none
     "compression_level": 6,

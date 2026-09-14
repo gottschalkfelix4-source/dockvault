@@ -28,6 +28,32 @@ export default {
         <div class="card">
           <div class="card-head"><h2>Sicherung</h2></div>
           <div class="stack">
+            <label class="field">Sicherungsumfang
+              <select data-key="mount_scope">
+                <option value="appdata" ${settings.mount_scope === 'all' ? '' : raw('selected')}>
+                  Nur Konfiguration — appdata und Docker-Volumes (empfohlen)</option>
+                <option value="all" ${settings.mount_scope === 'all' ? raw('selected') : ''}>
+                  Alle Mounts — auch Medien- und Datenpfade</option>
+              </select></label>
+            <div class="notice ${settings.mount_scope === 'all' ? 'warn' : 'info'}">
+              ${settings.mount_scope === 'all'
+                ? raw(`<strong>Achtung:</strong> Auch Medienbibliotheken und Downloads werden
+                    mitgesichert. Bei Plex oder Immich können das schnell mehrere Terabyte sein.`)
+                : raw(`Gesichert werden nur Pfade unterhalb von <code>appdata</code> sowie benannte
+                    Docker-Volumes — also die Konfiguration. Medienbibliotheken, Downloads und
+                    andere Shares bleiben außen vor. Was ein Container konkret mitnimmt, zeigt
+                    „Details" auf der Container-Seite.`)}
+            </div>
+
+            <label class="field">Was als Konfiguration gilt (ein Pfad pro Zeile)
+              <textarea data-key="appdata_roots" style="min-height:70px"
+                >${(settings.appdata_roots || []).join('\n')}</textarea></label>
+
+            <label class="field">Zusätzlich sichern, obwohl außerhalb (ein Pfad pro Zeile)
+              <textarea data-key="include_extra_paths" style="min-height:58px"
+                placeholder="/mnt/user/wichtige-daten"
+                >${(settings.include_extra_paths || []).join('\n')}</textarea></label>
+
             <label class="field">Komprimierung
               <select data-key="compression">
                 ${['zstd', 'gzip', 'none'].map((value) => html`

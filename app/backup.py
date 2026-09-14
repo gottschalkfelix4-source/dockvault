@@ -33,10 +33,16 @@ def plan(container_name: str, options: dict[str, Any] | None = None) -> dict[str
     """Was wuerde gesichert? Wird vom UI fuer die Vorschau genutzt."""
     options = _merge_options(options)
     attrs = docker_api.inspect(container_name)
-    artifacts = _collect_artifacts(attrs, options)
+    artifacts = _collect_artifacts(attrs, options, include_skipped=True)
     excludes = options["exclude_patterns"]
     total = 0
     for art in artifacts:
+        if not art["include"]:
+            # Datenpfade bewusst nicht vermessen: ein Medien-Share zu durchlaufen
+            # kann Minuten dauern und der Wert interessiert hier nicht.
+            art["estimated_bytes"] = None
+            art["files"] = None
+            continue
         source = Path(art["source"])
         if source.exists():
             size, files = archive.measure(source, excludes)
@@ -50,8 +56,10 @@ def plan(container_name: str, options: dict[str, Any] | None = None) -> dict[str
     template = unraid.read_template(container_name)
     return {
         "container": container_name,
-        "artifacts": artifacts,
+        "artifacts": [a for a in artifacts if a["include"]],
+        "skipped": [a for a in artifacts if not a["include"]],
         "estimated_bytes": total,
+        "mount_scope": options["mount_scope"],
         "template": {"present": bool(template), "file": template[0] if template else None,
                      "will_generate": not template and options["generate_missing_template"]},
         "options": options,
@@ -70,6 +78,9 @@ def _merge_options(options: dict[str, Any] | None) -> dict[str, Any]:
         "generate_missing_template": settings["generate_missing_template"],
         "exclude_paths": settings["exclude_paths"],
         "exclude_patterns": settings["exclude_patterns"],
+        "mount_scope": settings["mount_scope"],
+        "appdata_roots": settings["appdata_roots"],
+        "include_extra_paths": settings["include_extra_paths"],
         "max_artifact_gb": settings["max_artifact_gb"],
         "verify_checksums": settings["verify_checksums"],
     }
@@ -78,8 +89,47 @@ def _merge_options(options: dict[str, Any] | None) -> dict[str, Any]:
     return merged
 
 
-def _collect_artifacts(attrs: dict[str, Any], options: dict[str, Any]) -> list[dict[str, Any]]:
-    """Ermittelt alle zu sichernden Mounts eines Containers."""
+def _under(path: str, roots: list[str]) -> bool:
+    """Liegt ``path`` in einem der Wurzelverzeichnisse (oder ist es selbst)?"""
+    norm = path.rstrip("/")
+    for root in roots:
+        base = str(root).rstrip("/")
+        if base and (norm == base or norm.startswith(base + "/")):
+            return True
+    return False
+
+
+def classify_mount(source: str, kind: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Konfiguration oder Nutzdaten?
+
+    Auf Unraid liegt die Konfiguration eines Containers unter ``appdata``, waehrend
+    andere Shares die eigentlichen Nutzdaten enthalten - Plex' Medienbibliothek,
+    Immichs Fotos, Downloads. Die gehoeren nicht in ein Container-Backup: sie sind
+    um Groessenordnungen groesser und werden typischerweise anders gesichert.
+    """
+    if kind == "volume":
+        return {"category": "volume", "include": True,
+                "reason": "Benanntes Docker-Volume"}
+    if _under(source, options.get("include_extra_paths") or []):
+        return {"category": "config", "include": True,
+                "reason": "Manuell zur Sicherung hinzugefuegt"}
+    if _under(source, options.get("appdata_roots") or []):
+        return {"category": "config", "include": True,
+                "reason": "Konfiguration (appdata)"}
+    if options.get("mount_scope", "appdata") == "all":
+        return {"category": "data", "include": True,
+                "reason": "Datenpfad - mitgesichert, weil der Umfang auf 'alle Mounts' steht"}
+    return {"category": "data", "include": False,
+            "reason": "Datenpfad ausserhalb von appdata - nicht gesichert"}
+
+
+def _collect_artifacts(attrs: dict[str, Any], options: dict[str, Any],
+                       include_skipped: bool = False) -> list[dict[str, Any]]:
+    """Ermittelt die Mounts eines Containers samt Einstufung.
+
+    ``include_skipped`` liefert auch die uebersprungenen Datenpfade zurueck -
+    die Vorschau zeigt sie an, damit nachvollziehbar ist, was bewusst fehlt.
+    """
     out: list[dict[str, Any]] = []
     excluded_paths = set(options["exclude_paths"])
     seen: set[str] = set()
@@ -92,36 +142,43 @@ def _collect_artifacts(attrs: dict[str, Any], options: dict[str, Any]) -> list[d
 
         if destination in excluded_paths or source in excluded_paths:
             continue
-        if mtype == "bind" and not options["include_binds"]:
-            continue
-        if mtype == "volume" and not options["include_volumes"]:
-            continue
         if mtype == "tmpfs":
             continue
 
         if mtype == "volume":
-            mountpoint = source or docker_api.volume_mountpoint(name) or ""
-            # Im Container liegen Volumes unter dem gemounteten Volume-Verzeichnis
-            local = _map_volume_path(name, mountpoint)
             key = f"volume:{name}"
             if key in seen:
                 continue
             seen.add(key)
-            out.append({
-                "kind": "volume", "name": name, "source": local,
+            mountpoint = source or docker_api.volume_mountpoint(name) or ""
+            entry = {
+                "kind": "volume", "name": name,
+                "source": _map_volume_path(name, mountpoint),
                 "original_source": mountpoint, "destination": destination,
                 "rw": mount.get("RW", True), "driver": mount.get("Driver", "local"),
-            })
+            }
+            verdict = classify_mount(entry["source"], "volume", options)
+            if not options["include_volumes"]:
+                verdict = {"category": "volume", "include": False,
+                           "reason": "Volumes sind in den Einstellungen abgeschaltet"}
         else:
             key = f"bind:{source}"
             if key in seen:
                 continue
             seen.add(key)
-            out.append({
+            entry = {
                 "kind": "bind", "name": Path(source).name or _slug(destination),
                 "source": source, "original_source": source, "destination": destination,
                 "rw": mount.get("RW", True),
-            })
+            }
+            verdict = classify_mount(source, "bind", options)
+            if not options["include_binds"]:
+                verdict = {"category": verdict["category"], "include": False,
+                           "reason": "Bind-Mounts sind in den Einstellungen abgeschaltet"}
+
+        entry.update(verdict)
+        if verdict["include"] or include_skipped:
+            out.append(entry)
     return out
 
 
@@ -166,8 +223,12 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
     db.add_event("backup.started", f"Backup von {container_name} gestartet",
                  container=container_name, job_id=ctx.job_id)
 
-    artifacts = _collect_artifacts(attrs, opts)
-    ctx.log(f"{len(artifacts)} Datenquelle(n) gefunden, Image: {image}")
+    scanned = _collect_artifacts(attrs, opts, include_skipped=True)
+    artifacts = [a for a in scanned if a["include"]]
+    ignored = [a for a in scanned if not a["include"]]
+    ctx.log(f"{len(artifacts)} Datenquelle(n) werden gesichert, Image: {image}")
+    for entry in ignored:
+        ctx.log(f"uebersprungen: {entry['source']} ({entry['reason']})")
 
     # --- Konfiguration sichern (immer, auch wenn Daten scheitern) --------
     (target_dir / "inspect.json").write_text(
@@ -286,6 +347,8 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
         "archive_bytes": total_archive,
         "template": template_info,
         "artifacts": saved,
+        "ignored_mounts": ignored,
+        "mount_scope": opts["mount_scope"],
         "networks": networks,
         "failures": failures,
         "options": opts,
