@@ -153,6 +153,8 @@ def _dispatch(schedule: dict[str, Any], trigger: str) -> list[str]:
             try:
                 backup.run(ctx, name, trigger=trigger, options=options)
                 results["ok"].append(name)
+            except runner.JobCancelled:
+                raise            # Abbruch beendet den Lauf, statt weiterzumachen
             except Exception as exc:  # noqa: BLE001 - ein Fehler stoppt den Lauf nicht
                 ctx.log(f"{name}: {exc}", "error")
                 results["failed"].append({"container": name, "error": str(exc)})

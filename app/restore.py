@@ -263,7 +263,8 @@ def _restore_data(ctx: JobContext, manifest: dict[str, Any], backup_path: Path,
             ctx.progress(_base + _span * (done / total if total else 1),
                          f"{_name}: wird entpackt")
 
-        res = archive.unpack(archive_file, target, progress=on_progress)
+        res = archive.unpack(archive_file, target, progress=on_progress,
+                             cancelled=ctx.check_cancel)
         if res["error_count"]:
             ctx.log(f"{art['name']}: {res['error_count']} Fehler beim Entpacken", "warn")
             for line in res["errors"][:5]:

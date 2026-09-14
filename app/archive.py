@@ -18,6 +18,11 @@ except ImportError:  # pragma: no cover - Fallback auf gzip
     HAVE_ZSTD = False
 
 ProgressCb = Callable[[int, int], None] | None
+CancelCb = Callable[[], None] | None
+
+
+class ArchiveCancelled(RuntimeError):
+    """Wird geworfen, wenn ein Pack- oder Entpackvorgang abgebrochen wurde."""
 
 SUFFIX = {"zstd": ".tar.zst", "gzip": ".tar.gz", "none": ".tar"}
 
@@ -44,6 +49,14 @@ class _HashingWriter:
     @property
     def digest(self) -> str:
         return self._hash.hexdigest()
+
+
+def _close_quietly(handle: Any) -> None:
+    """Schliessen, ohne dass Folgefehler den eigentlichen Abbruch verdecken."""
+    try:
+        handle.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def choose_compression(name: str) -> str:
@@ -99,18 +112,30 @@ def measure(source: Path, excludes: list[str]) -> tuple[int, int]:
 
 
 def pack(source: Path, dest: Path, *, compression: str = "zstd", level: int = 6,
-         excludes: list[str] | None = None, progress: ProgressCb = None) -> dict[str, Any]:
+         excludes: list[str] | None = None, progress: ProgressCb = None,
+         cancelled: CancelCb = None) -> dict[str, Any]:
     """Packt ``source`` nach ``dest``. Gibt Groessen, Pruefsumme und Dateizahl zurueck."""
     excludes = excludes or []
     compression = choose_compression(compression)
     dest.parent.mkdir(parents=True, exist_ok=True)
     total_bytes, total_files = measure(source, excludes)
-    done_bytes = 0
-    files_added = 0
-    skipped: list[str] = []
     base = source.name if source.is_file() else "."
 
     tmp = dest.with_suffix(dest.suffix + ".part")
+    try:
+        return _pack_into(tmp, dest, source, base, excludes, compression, level,
+                          total_bytes, total_files, progress, cancelled)
+    except BaseException:
+        tmp.unlink(missing_ok=True)   # keine halben Archive hinterlassen
+        raise
+
+
+def _pack_into(tmp: Path, dest: Path, source: Path, base: str, excludes: list[str],
+               compression: str, level: int, total_bytes: int, total_files: int,
+               progress: ProgressCb, cancelled: CancelCb) -> dict[str, Any]:
+    done_bytes = 0
+    files_added = 0
+    skipped: list[str] = []
     with open(tmp, "wb") as raw:
         writer = _HashingWriter(raw)
         stream: Any
@@ -126,6 +151,10 @@ def pack(source: Path, dest: Path, *, compression: str = "zstd", level: int = 6,
                            bufsize=1024 * 256)
         try:
             for path, arcname in _walk(source, base, excludes):
+                # Vor jeder Datei pruefen - sonst laeuft ein grosses appdata
+                # nach dem Abbruch noch minutenlang weiter.
+                if cancelled:
+                    cancelled()
                 try:
                     st = os.lstat(path)
                     if stat_mod.S_ISSOCK(st.st_mode):
@@ -139,12 +168,18 @@ def pack(source: Path, dest: Path, *, compression: str = "zstd", level: int = 6,
                             progress(done_bytes, total_bytes)
                 except (OSError, tarfile.TarError) as exc:
                     skipped.append(f"{arcname}: {exc}")
+        except BaseException:
+            # Das Archiv wird ohnehin verworfen. Beim Schliessen wuerde zstd
+            # erst noch den gesamten mehrfaedigen Puffer auskomprimieren - bei
+            # einem Abbruch sind das leicht Dutzende Sekunden Wartezeit fuer
+            # ein Ergebnis, das niemand haben will. Also Ziel dichtmachen und
+            # die dadurch scheiternden Schreibvorgaenge schlucken.
+            _close_quietly(raw)
+            raise
         finally:
-            tar.close()
-            if compression == "zstd":
-                stream.close()
-            elif compression == "gzip":
-                stream.close()
+            _close_quietly(tar)
+            if compression in ("zstd", "gzip"):
+                _close_quietly(stream)
 
         archive_bytes = writer.written
         digest = writer.digest
@@ -213,7 +248,7 @@ def _safe_member(member: tarfile.TarInfo, dest: Path) -> tarfile.TarInfo | None:
 
 
 def unpack(archive: Path, dest: Path, *, compression: str | None = None,
-           progress: ProgressCb = None) -> dict[str, Any]:
+           progress: ProgressCb = None, cancelled: CancelCb = None) -> dict[str, Any]:
     """Entpackt ``archive`` nach ``dest`` und erhaelt dabei Rechte/Eigentuemer."""
     compression = compression or detect_compression(archive)
     dest.mkdir(parents=True, exist_ok=True)
@@ -225,6 +260,8 @@ def unpack(archive: Path, dest: Path, *, compression: str | None = None,
     try:
         tar = tarfile.open(fileobj=stream, mode="r|", bufsize=1024 * 256)
         for member in tar:
+            if cancelled:
+                cancelled()
             checked = _safe_member(member, dest)
             if checked is None:
                 errors.append(f"uebersprungen (unsicherer Pfad): {member.name}")

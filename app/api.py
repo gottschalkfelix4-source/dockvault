@@ -356,6 +356,8 @@ def start_bulk_backup(payload: BulkBackupRequest) -> dict[str, Any]:
             try:
                 backup.run(ctx, name, trigger="manual-bulk", options=payload.options)
                 result["ok"].append(name)
+            except runner.JobCancelled:
+                raise            # Abbruch beendet den Lauf, statt weiterzumachen
             except Exception as exc:  # noqa: BLE001
                 ctx.log(f"{name}: {exc}", "error")
                 result["failed"].append({"container": name, "error": str(exc)})

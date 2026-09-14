@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import archive, config, db, docker_api, events, storage, unraid
-from .runner import JobContext
+from .runner import JobCancelled, JobContext
 
 MANIFEST_SCHEMA = 2
 MANIFEST_NAME = "manifest.json"
@@ -295,6 +295,7 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
         try:
             docker_api.control(container_name, "stop", timeout=60)
             stopped_by_us = True
+            _note_stopped(container_name, True)
             events.publish("container.changed", {"name": container_name, "state": "exited"})
         except Exception as exc:  # noqa: BLE001
             ctx.log(f"Konnte Container nicht stoppen, sichere im laufenden Zustand: {exc}", "warn")
@@ -303,6 +304,7 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
     total_source = 0
     total_archive = 0
     failures: list[str] = []
+    cancelled = False
 
     try:
         span = 82.0 / max(len(artifacts), 1)
@@ -340,7 +342,10 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
                 result = archive.pack(source, dest, compression=compression,
                                       level=opts["compression_level"],
                                       excludes=opts["exclude_patterns"],
-                                      progress=on_progress)
+                                      progress=on_progress,
+                                      cancelled=ctx.check_cancel)
+            except JobCancelled:
+                raise
             except Exception as exc:  # noqa: BLE001
                 ctx.log(f"{label} fehlgeschlagen: {exc}", "error")
                 failures.append(f"{label}: {exc}")
@@ -357,17 +362,31 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
             if result["skipped_count"]:
                 ctx.log(f"{label}: {result['skipped_count']} Eintraege uebersprungen", "warn")
             saved.append({**art, "file": filename, "skipped": False, **result})
+    except JobCancelled:
+        cancelled = True
+        raise
     finally:
         if stopped_by_us:
             ctx.step(f"Container '{container_name}' wird wieder gestartet", 94)
             try:
                 docker_api.control(container_name, "start")
+                _note_stopped(container_name, False)
                 events.publish("container.changed", {"name": container_name, "state": "running"})
             except Exception as exc:  # noqa: BLE001
                 ctx.log(f"Container konnte nicht neu gestartet werden: {exc}", "error")
                 db.add_event("container.start_failed",
                              f"{container_name} konnte nach dem Backup nicht starten: {exc}",
                              level="error", container=container_name, job_id=ctx.job_id)
+
+        if cancelled:
+            # Ein halbes Backup ist wertlos und wuerde als "running" im Index
+            # haengen bleiben - also restlos entfernen.
+            ref = f"{_slug(container_name)}/{backup_id}"
+            ctx.log("Abgebrochen - unvollstaendiges Backup wird entfernt", "warn")
+            shutil.rmtree(target_dir, ignore_errors=True)
+            db.delete_backup(ref)
+            db.add_event("backup.cancelled", f"Backup von {container_name} abgebrochen",
+                         level="warn", container=container_name, job_id=ctx.job_id)
 
     duration = time.monotonic() - started
     status = "completed" if not failures else ("partial" if saved else "failed")
@@ -536,6 +555,80 @@ def delete(backup_ref: str) -> bool:
 
 
 # ---------------------------------------------------------------- Index
+
+STOPPED_STATE = "stopped-by-dockvault.json"
+
+
+def _stopped_state_path() -> Path:
+    return config.CONFIG_DIR / STOPPED_STATE
+
+
+def _note_stopped(name: str, stopped: bool) -> None:
+    """Merkt sich, welche Container DockVault angehalten hat.
+
+    Stirbt der Container mitten im Backup, wuerde der angehaltene Dienst sonst
+    unten bleiben - unbemerkt, bis jemand ihn vermisst.
+    """
+    path = _stopped_state_path()
+    try:
+        current = set(json.loads(path.read_text("utf-8"))) if path.exists() else set()
+    except (OSError, ValueError):
+        current = set()
+    if stopped:
+        current.add(name)
+    else:
+        current.discard(name)
+    try:
+        path.write_text(json.dumps(sorted(current)), "utf-8")
+    except OSError:
+        pass
+
+
+def restart_orphaned_containers() -> dict[str, Any]:
+    """Beim Start: Container wieder hochfahren, die ein abgestuerztes Backup anhielt."""
+    path = _stopped_state_path()
+    if not path.exists():
+        return {"restarted": [], "failed": []}
+    try:
+        names = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        names = []
+
+    restarted, failed = [], []
+    for name in names:
+        try:
+            if docker_api.exists(name):
+                attrs = docker_api.inspect(name)
+                if not (attrs.get("State") or {}).get("Running"):
+                    docker_api.control(name, "start")
+                    restarted.append(name)
+                    db.add_event("container.recovered",
+                                 f"{name} war nach einem abgebrochenen Backup gestoppt "
+                                 f"und wurde wieder gestartet", level="warn", container=name)
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"container": name, "error": str(exc)})
+    path.unlink(missing_ok=True)
+    return {"restarted": restarted, "failed": failed}
+
+
+def cleanup_stale() -> dict[str, Any]:
+    """Beim Start: Backups, die als "running" im Index stehen, sind Leichen.
+
+    Ein laufender Job ueberlebt keinen Neustart des Containers. Bleibt so ein
+    Eintrag stehen, sieht ein halbes Backup wie ein gueltiges aus - genau das
+    darf bei einem Sicherungswerkzeug nicht passieren.
+    """
+    stale = [b for b in db.list_backups(limit=5000) if b["status"] == "running"]
+    for record in stale:
+        path = Path(record["path"])
+        if str(path).startswith(str(config.BACKUP_DIR)):
+            shutil.rmtree(path, ignore_errors=True)
+        db.delete_backup(record["id"])
+        db.add_event("backup.stale_removed",
+                     f"Unvollstaendiges Backup von {record['container']} entfernt "
+                     f"(Abbruch oder Neustart)", level="warn", container=record["container"])
+    return {"removed": len(stale), "ids": [b["id"] for b in stale]}
+
 
 def rescan() -> dict[str, Any]:
     """Backup-Verzeichnis einlesen - stellt den Index nach einem Datenverlust wieder her."""

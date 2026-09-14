@@ -50,6 +50,18 @@ async def lifespan(app: FastAPI):
             db.add_event("storage.failed",
                          f"SMB-Ziel beim Start nicht eingebunden: {exc}", level="error")
 
+    recovered = backup.restart_orphaned_containers()
+    if recovered["restarted"]:
+        log.warning("Nach einem abgebrochenen Backup wieder gestartet: %s",
+                    ", ".join(recovered["restarted"]))
+    for entry in recovered["failed"]:
+        log.error("Konnte %s nicht wieder starten: %s", entry["container"], entry["error"])
+
+    stale = backup.cleanup_stale()
+    if stale["removed"]:
+        log.warning("%s unvollstaendige(s) Backup(s) aus einem Abbruch entfernt",
+                    stale["removed"])
+
     stats = backup.rescan()
     if stats["added"]:
         log.info("Index ergaenzt: %s Backup(s) aus dem Dateisystem uebernommen", stats["added"])

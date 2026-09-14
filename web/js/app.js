@@ -2,7 +2,7 @@
 
 import { api, connectStream, subscribe } from './api.js';
 import { el, els, html, raw } from './util.js';
-import { toast } from './components.js';
+import { toast, confirm } from './components.js';
 
 import dashboard from './views/dashboard.js';
 import timeline from './views/timeline.js';
@@ -110,11 +110,36 @@ function renderActiveJobs() {
     <div class="job-strip">
       <div class="spread">
         <span><strong>${jobTypeLabel(job.type)}</strong> · ${job.target || ''}</span>
-        <span class="muted mono">${Math.round(job.progress || 0)} %</span>
+        <span class="row" style="gap:10px">
+          <span class="muted mono">${Math.round(job.progress || 0)} %</span>
+          <button class="btn danger sm" data-cancel="${job.job_id}"
+                  data-type="${job.type}">Abbrechen</button>
+        </span>
       </div>
       <div class="progress"><i style="width:${String(job.progress || 0)}%"></i></div>
       <div class="muted" style="font-size:12px">${job.message || ''}</div>
     </div>`).join('');
+}
+
+async function cancelJob(jobId, type) {
+  // Ein abgebrochener Restore hinterlaesst halb entpackte Daten - dafuer lohnt
+  // die Rueckfrage. Ein Backup aufzugeben ist dagegen folgenlos.
+  if (type === 'restore') {
+    const ok = await confirm({
+      title: 'Wiederherstellung abbrechen',
+      message: 'Bereits entpackte Dateien bleiben liegen und der Container ist womöglich '
+             + 'in einem Zwischenzustand. Danach solltest du die Wiederherstellung '
+             + 'komplett wiederholen.',
+      confirmLabel: 'Trotzdem abbrechen', danger: true,
+    });
+    if (!ok) return;
+  }
+  try {
+    await api.cancelJob(jobId);
+    toast('Abbruch angefordert — der laufende Schritt wird noch beendet', 'warn');
+  } catch (error) {
+    toast(error.message, 'err');
+  }
 }
 
 function jobTypeLabel(type) {
@@ -123,6 +148,17 @@ function jobTypeLabel(type) {
 }
 
 // ---------------------------------------------------------------- Start
+
+function wireCancelButtons() {
+  el('#active-jobs').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-cancel]');
+    if (!button) return;
+    button.disabled = true;
+    cancelJob(button.dataset.cancel, button.dataset.type)
+      .finally(() => { button.disabled = false; });
+  });
+}
+
 
 function wireLiveEvents() {
   connectStream((connectionState) => {
@@ -146,6 +182,7 @@ function wireLiveEvents() {
     const label = `${jobTypeLabel(data.type)} · ${data.target || ''}`;
     if (data.status === 'completed') toast(`${label}: abgeschlossen`, 'ok');
     else if (data.status === 'failed') toast(`${label}: fehlgeschlagen — ${data.error || ''}`, 'err', 8000);
+    else if (data.status === 'cancelled') toast(`${label}: abgebrochen`, 'warn');
     else toast(`${label}: ${data.status}`, 'warn');
 
     refreshStatus().catch(() => {});
@@ -160,6 +197,7 @@ function wireLiveEvents() {
 }
 
 async function boot() {
+  wireCancelButtons();
   wireLiveEvents();
   try {
     await refreshStatus();

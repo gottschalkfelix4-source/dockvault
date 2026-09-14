@@ -177,8 +177,26 @@ und Bestätigung und zeigt vorher genau, was passieren wird.
 **Zeitpläne** — Cron-basierte automatische Sicherungen, wahlweise für alle Container oder
 eine Auswahl. Neue Container werden bei „alle" automatisch mit erfasst.
 
-**Aufträge** — Verlauf aller Läufe mit vollständigem Protokoll; laufende Jobs lassen sich
-abbrechen.
+**Aufträge** — Verlauf aller Läufe mit vollständigem Protokoll.
+
+## Abbrechen
+
+Läuft ein Auftrag, erscheint auf **jeder** Seite oben ein Fortschrittsstreifen mit
+Abbrechen-Knopf. Der Abbruch greift zwischen zwei Dateien, nicht erst nach dem aktuellen
+Archiv — bei Standardeinstellungen ist ein laufendes Backup binnen Sekunden beendet, auch
+mitten in mehreren Gigabyte. (Bei Kompressionsstufe 19 dauert es länger: zstd muss seinen
+mehrfädigen Puffer noch zu Ende rechnen.)
+
+Danach wird aufgeräumt: das halbe Archiv wird gelöscht, der Eintrag verschwindet aus dem
+Index, und ein für die Sicherung angehaltener Container läuft wieder. Ein Sammel-Backup
+oder Zeitplan bricht komplett ab, statt mit dem nächsten Container weiterzumachen.
+
+Das gilt auch für den harten Fall: Stirbt DockVault mitten im Backup, werden beim nächsten
+Start unvollständige Sicherungen entfernt und angehaltene Container wieder hochgefahren —
+sonst bliebe ein Dienst unbemerkt unten.
+
+Eine Wiederherstellung lässt sich ebenfalls abbrechen, fragt dafür aber nach: bereits
+entpackte Dateien bleiben liegen.
 
 ---
 
