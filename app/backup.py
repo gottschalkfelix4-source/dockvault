@@ -79,10 +79,7 @@ def _merge_options(options: dict[str, Any] | None) -> dict[str, Any]:
         "exclude_paths": settings["exclude_paths"],
         "exclude_patterns": settings["exclude_patterns"],
         "mount_scope": settings["mount_scope"],
-        "appdata_dirname": settings["appdata_dirname"],
-        "appdata_max_depth": settings["appdata_max_depth"],
-        "appdata_roots": settings["appdata_roots"],
-        "include_extra_paths": settings["include_extra_paths"],
+        "backup_roots": settings["backup_roots"],
         "max_artifact_gb": settings["max_artifact_gb"],
         "verify_checksums": settings["verify_checksums"],
     }
@@ -112,62 +109,80 @@ def _depth_below(path: str, base: str) -> int | None:
     return len([p for p in norm[len(root) + 1:].split("/") if p])
 
 
-def appdata_depth(source: str, options: dict[str, Any]) -> int | None:
-    """Ebenen unterhalb eines appdata-Verzeichnisses, oder None.
-
-    Unraid-Pools heissen frei waehlbar - appdata liegt genauso unter
-    ``/mnt/user/appdata`` wie unter ``/mnt/work/appdata`` oder ``/mnt/cache/appdata``.
-    Eine feste Pfadliste geht deshalb zwangslaeufig an realen Setups vorbei; wir
-    erkennen stattdessen jedes Verzeichnis mit dem passenden Namen.
-    """
-    for root in options.get("appdata_roots") or []:
-        depth = _depth_below(source, str(root))
-        if depth is not None:
-            return depth
-
-    dirname = (options.get("appdata_dirname") or "appdata").strip("/")
-    parts = [p for p in source.split("/") if p]
-    for index, part in enumerate(parts):
-        if part.lower() == dirname.lower():
-            return len(parts) - index - 1
+def matching_root(source: str, roots: list[str]) -> str | None:
+    """Das Quellverzeichnis, unter dem ``source`` liegt - oder None."""
+    for root in roots:
+        base = str(root).strip().rstrip("/")
+        if base and _depth_below(source, base) is not None:
+            return base
     return None
 
 
+def detect_roots() -> list[dict[str, Any]]:
+    """Schlaegt Quellverzeichnisse anhand der tatsaechlichen Container vor.
+
+    Sucht in allen Bind-Mounts nach Verzeichnissen mit dem konfigurierten Namen
+    (Vorgabe ``appdata``) und meldet, wie viele Container darunter liegen. So
+    muss niemand die Pools von Hand zusammensuchen.
+    """
+    dirname = (config.get("appdata_dirname") or "appdata").strip("/").lower()
+    found: dict[str, set[str]] = {}
+    try:
+        containers = docker_api.list_containers(all_containers=True)
+    except Exception:  # noqa: BLE001
+        return []
+
+    for container in containers:
+        for mount in container.get("mounts") or []:
+            if mount.get("type") != "bind":
+                continue
+            source = mount.get("source") or ""
+            # Auf Unraid liegen Pools und Shares ausnahmslos unter /mnt. Ohne
+            # diese Grenze schlaegt die Erkennung auch Pfade vor, die zufaellig
+            # ein "AppData" im Namen tragen.
+            if not source.startswith("/mnt/"):
+                continue
+            parts = [p for p in source.split("/") if p]
+            for index, part in enumerate(parts):
+                if part.lower() == dirname:
+                    root = "/" + "/".join(parts[:index + 1])
+                    found.setdefault(root, set()).add(container["name"])
+                    break
+
+    return sorted(
+        ({"path": root, "containers": sorted(names), "count": len(names)}
+         for root, names in found.items()),
+        key=lambda entry: (-entry["count"], entry["path"]),
+    )
+
+
 def classify_mount(source: str, kind: str, options: dict[str, Any]) -> dict[str, Any]:
-    """Konfiguration oder Nutzdaten?
+    """Gehoert dieser Mount ins Backup?
 
-    Die Konfiguration eines Containers liegt unter ``appdata``, waehrend andere
-    Shares die eigentlichen Nutzdaten enthalten - Plex' Mediathek, Immichs Fotos,
-    Downloads. Die gehoeren nicht in ein Container-Backup: sie sind um
-    Groessenordnungen groesser und werden typischerweise anders gesichert.
-
-    Die Tiefengrenze faengt einen haeufigen Fall ab: Container reichen sich
-    gegenseitig Unterordner durch, etwa den Download-Ordner eines anderen Dienstes
-    unter ``.../appdata/sabvpn/Downloads/complete``. Das liegt zwar unter appdata,
-    ist aber Nutzdaten - und gehoert nicht ins Backup des lesenden Containers.
+    Entschieden wird ausschliesslich an den vorgegebenen Quellverzeichnissen:
+    liegt der Mount darunter, wird er gesichert - sonst nicht. Die Vorsortierung
+    passiert damit einmal zentral ("das sind meine appdata-Verzeichnisse") statt
+    pro Container aus der Ordnerstruktur geraten zu werden. Medienshares wie
+    /mnt/medien koennen so gar nicht erst versehentlich im Backup landen.
     """
     if kind == "volume":
         return {"category": "volume", "include": True,
                 "reason": "Benanntes Docker-Volume"}
-    if _under(source, options.get("include_extra_paths") or []):
-        return {"category": "config", "include": True,
-                "reason": "Manuell zur Sicherung hinzugefuegt"}
 
-    depth = appdata_depth(source, options)
-    max_depth = int(options.get("appdata_max_depth", 2) or 2)
-    if depth is not None and depth <= max_depth:
-        return {"category": "config", "include": True,
-                "reason": "Konfiguration (appdata)"}
+    roots = options.get("backup_roots") or []
+    root = matching_root(source, roots)
+    if root:
+        return {"category": "config", "include": True, "root": root,
+                "reason": f"Liegt in {root}"}
 
-    if options.get("mount_scope", "appdata") == "all":
+    if options.get("mount_scope", "roots") == "all":
         return {"category": "data", "include": True,
-                "reason": "Datenpfad - mitgesichert, weil der Umfang auf 'alle Mounts' steht"}
-    if depth is not None:
+                "reason": "Mitgesichert, weil der Umfang auf 'alle Mounts' steht"}
+    if not roots:
         return {"category": "data", "include": False,
-                "reason": f"Liegt {depth} Ebenen unter appdata - gilt als Datenordner "
-                          f"eines anderen Dienstes, nicht als eigene Konfiguration"}
+                "reason": "Es ist noch kein Quellverzeichnis hinterlegt"}
     return {"category": "data", "include": False,
-            "reason": "Datenpfad ausserhalb von appdata - nicht gesichert"}
+            "reason": "Liegt in keinem der hinterlegten Quellverzeichnisse"}
 
 
 def _collect_artifacts(attrs: dict[str, Any], options: dict[str, Any],
@@ -178,7 +193,7 @@ def _collect_artifacts(attrs: dict[str, Any], options: dict[str, Any],
     die Vorschau zeigt sie an, damit nachvollziehbar ist, was bewusst fehlt.
     """
     out: list[dict[str, Any]] = []
-    excluded_paths = set(options["exclude_paths"])
+    excluded_paths = list(options["exclude_paths"])
     seen: set[str] = set()
 
     for mount in attrs.get("Mounts") or []:
@@ -187,7 +202,10 @@ def _collect_artifacts(attrs: dict[str, Any], options: dict[str, Any],
         source = mount.get("Source") or ""
         name = mount.get("Name") or ""
 
-        if destination in excluded_paths or source in excluded_paths:
+        # Praefix-Vergleich: ein ausgeschlossenes Verzeichnis nimmt auch alles
+        # darunter heraus - so laesst sich ein einzelner Unterordner eines
+        # Quellverzeichnisses gezielt ausklammern.
+        if _under(destination, excluded_paths) or _under(source, excluded_paths):
             continue
         if mtype == "tmpfs":
             continue
@@ -555,6 +573,24 @@ def delete(backup_ref: str) -> bool:
 
 
 # ---------------------------------------------------------------- Index
+
+def ensure_roots_configured() -> dict[str, Any]:
+    """Beim ersten Start sinnvolle Quellverzeichnisse eintragen.
+
+    Ohne Vorgabe wuerde nichts gesichert. Der Vorschlag wird bewusst dauerhaft
+    gespeichert statt jedes Mal neu geraten - so steht in den Einstellungen
+    schwarz auf weiss, woraus gesichert wird, und bleibt aenderbar.
+    """
+    if config.get("backup_roots"):
+        return {"changed": False, "roots": config.get("backup_roots")}
+    detected = [entry["path"] for entry in detect_roots()]
+    if not detected:
+        return {"changed": False, "roots": []}
+    config.update({"backup_roots": detected})
+    db.add_event("settings.roots_detected",
+                 f"Quellverzeichnisse automatisch erkannt: {', '.join(detected)}")
+    return {"changed": True, "roots": detected}
+
 
 STOPPED_STATE = "stopped-by-dockvault.json"
 

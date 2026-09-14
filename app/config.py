@@ -42,11 +42,14 @@ DEFAULTS: dict[str, Any] = {
     "smb_version": "3.0",            # auto | 3.1.1 | 3.0 | 2.1 | 1.0
     "smb_options": "",               # zusaetzliche mount-Optionen
     # Sicherungsumfang: was von den Mounts eines Containers gesichert wird
-    "mount_scope": "appdata",        # appdata = nur Konfiguration | all = alle Mounts
-    "appdata_dirname": "appdata",    # Verzeichnisname, der Konfiguration markiert
-    "appdata_max_depth": 2,          # Ebenen darunter, die noch als Konfiguration gelten
-    "appdata_roots": [],             # Zusaetzliche Wurzeln bei abweichendem Layout
-    "include_extra_paths": [],       # Zusaetzlich sichern, obwohl kein appdata
+    #
+    # "roots" sichert ausschliesslich Mounts, die unterhalb eines der unten
+    # angegebenen Quellverzeichnisse liegen. Die Vorsortierung passiert damit
+    # einmal zentral statt pro Container geraten zu werden - Medienshares wie
+    # /mnt/medien koennen so gar nicht erst versehentlich im Backup landen.
+    "mount_scope": "roots",          # roots = nur aus den Quellverzeichnissen | all = alles
+    "backup_roots": [],              # z. B. /mnt/work/appdata, /mnt/cache/appdata
+    "appdata_dirname": "appdata",    # nur fuer den Erkennungs-Vorschlag in der UI
     # Sicherung
     "compression": "zstd",          # zstd | gzip | none
     "compression_level": 6,
@@ -85,6 +88,22 @@ _lock = threading.RLock()
 _cache: dict[str, Any] | None = None
 
 
+def _migrate(data: dict[str, Any]) -> dict[str, Any]:
+    """Aeltere Einstellungen auf die aktuellen Schluessel heben."""
+    # Frueher gab es getrennte Listen und eine Tiefenregel. Die Tiefenregel hat
+    # je nach appdata-Struktur mal zu viel, mal zu wenig erfasst; ersetzt durch
+    # ausdrueckliche Quellverzeichnisse.
+    if not data.get("backup_roots"):
+        merged = list(data.get("appdata_roots") or []) + list(data.get("include_extra_paths") or [])
+        if merged:
+            data["backup_roots"] = sorted(dict.fromkeys(merged))
+    if data.get("mount_scope") == "appdata":
+        data["mount_scope"] = "roots"
+    for gone in ("appdata_max_depth", "appdata_roots", "include_extra_paths"):
+        data.pop(gone, None)
+    return data
+
+
 def _load() -> dict[str, Any]:
     data = dict(DEFAULTS)
     if SETTINGS_PATH.exists():
@@ -92,7 +111,7 @@ def _load() -> dict[str, Any]:
             data.update(json.loads(SETTINGS_PATH.read_text("utf-8")))
         except (OSError, ValueError):
             pass
-    return data
+    return _migrate(data)
 
 
 def all_settings() -> dict[str, Any]:

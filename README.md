@@ -67,38 +67,52 @@ docker build -t dockvault:latest .
 
 Die Web-Oberfläche läuft danach auf `http://<unraid-ip>:8070`.
 
-## Sicherungsumfang: Konfiguration statt Mediathek
+## Sicherungsumfang: Quellverzeichnisse vorgeben
 
 Ein Container mountet typischerweise zweierlei: seine **Konfiguration** unter `appdata`
-und die **Nutzdaten**, die er verwaltet — Plex' Medienbibliothek, Immichs Fotos,
-Downloads. Nur das Erste gehört in ein Container-Backup. Das Zweite ist um
-Größenordnungen größer und wird sinnvollerweise anders gesichert.
+und die **Nutzdaten**, die er verwaltet - Plex' Mediathek, Immichs Fotos, Downloads. Nur
+das Erste gehoert in ein Container-Backup.
 
-DockVault sichert deshalb standardmäßig **nur**:
+Statt das pro Container aus der Ordnerstruktur zu raten, gibst du unter
+**Einstellungen -> Quellverzeichnisse** einmal an, wo deine Konfiguration liegt:
 
-* Bind-Mounts unterhalb eines Verzeichnisses namens `appdata`
-* benannte Docker-Volumes
-* die Container-Konfiguration und das Unraid-Template
+```
+/mnt/work/appdata
+/mnt/cache/appdata
+/mnt/user/appdata
+```
 
-Erkannt wird der **Verzeichnisname**, nicht ein fester Pfad — Unraid-Pools heißen frei
-wählbar, appdata liegt je nach Setup unter `/mnt/user/appdata`, `/mnt/cache/appdata` oder
-`/mnt/work/appdata`. Eine Tiefengrenze (Vorgabe: 2 Ebenen) sorgt dafür, dass
-durchgereichte Ordner anderer Dienste nicht als eigene Konfiguration durchgehen — etwa
-`…/appdata/sabvpn/Downloads/complete`, das in einem Radarr-Backup nichts verloren hat.
+Die Regel ist danach denkbar einfach und vorhersagbar: **liegt ein Mount unterhalb eines
+dieser Verzeichnisse, wird er gesichert - sonst nicht.** Egal wie tief die Struktur eines
+Containers verschachtelt ist, es wird immer alles erfasst. Und ein Medienshare wie
+`/mnt/medien` kann gar nicht erst hineinrutschen, weil es schlicht nicht in der Liste steht.
 
-Alles andere wird übersprungen und im Protokoll sowie im Manifest namentlich aufgeführt.
-Die Container-Detailansicht zeigt beide Listen nebeneinander: was gesichert wird und was
-bewusst fehlt — samt Begründung.
+Zusaetzlich gesichert werden immer: benannte Docker-Volumes, die Container-Konfiguration
+und das Unraid-Template.
 
-**Wichtig:** Übersprungen wird nur das *Archivieren der Daten*. `inspect.json` und das
+**Verzeichnisse erkennen** durchsucht alle Container nach `appdata`-Verzeichnissen und
+zeigt, welcher Pfad von wie vielen Containern genutzt wird - beim ersten Start passiert das
+automatisch, das Ergebnis landet sichtbar in den Einstellungen und bleibt aenderbar.
+
+Einzelne Unterordner lassen sich unter *Host-Pfade, die nie gesichert werden* ausklammern;
+das wirkt samt Unterordnern. Nuetzlich, wenn ein Dienst seinen Download-Ordner innerhalb
+von `appdata` liegen hat und andere Container ihn eingebunden bekommen:
+
+```
+/mnt/work/appdata/sabvpn/Downloads
+```
+
+Die Container-Detailansicht zeigt beide Listen nebeneinander - was gesichert wird und was
+uebersprungen wird, jeweils mit Begruendung. Job-Protokoll und Manifest fuehren die
+uebersprungenen Pfade ebenfalls auf.
+
+**Wichtig:** Uebersprungen wird nur das *Archivieren der Daten*. `inspect.json` und das
 Template behalten **alle** Mounts. Ein wiederhergestellter Plex-Container ist also
-vollständig verdrahtet und findet seine Mediathek an Ort und Stelle wieder — sie wurde
+vollstaendig verdrahtet und findet seine Mediathek an Ort und Stelle wieder - sie wurde
 ja nie angefasst.
 
-Zwei Stellschrauben in den Einstellungen:
-
-* **Zusätzlich sichern** — einzelne Pfade außerhalb von `appdata` doch mitnehmen
-* **Sicherungsumfang: Alle Mounts** — alles archivieren (Vorsicht bei Medienshares)
+Wer wirklich alles will, stellt den Sicherungsumfang auf *Alle Mounts* - dann werden die
+Quellverzeichnisse ignoriert und jeder Mount archiviert.
 
 ## Backup-Ziel: lokal oder SMB
 

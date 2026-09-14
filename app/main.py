@@ -50,6 +50,13 @@ async def lifespan(app: FastAPI):
             db.add_event("storage.failed",
                          f"SMB-Ziel beim Start nicht eingebunden: {exc}", level="error")
 
+    roots = backup.ensure_roots_configured()
+    if roots["changed"]:
+        log.info("Quellverzeichnisse automatisch erkannt: %s", ", ".join(roots["roots"]))
+    elif not roots["roots"]:
+        log.warning("Keine Quellverzeichnisse hinterlegt - es werden nur Konfiguration, "
+                    "Template und benannte Volumes gesichert")
+
     recovered = backup.restart_orphaned_containers()
     if recovered["restarted"]:
         log.warning("Nach einem abgebrochenen Backup wieder gestartet: %s",

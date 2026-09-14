@@ -30,6 +30,8 @@ export const api = {
   mountStorage: () => post('/storage/mount'),
   unmountStorage: () => post('/storage/unmount'),
 
+  detectRoots: () => get('/backup-roots/detect'),
+
   containers: () => get('/containers'),
   container: (name) => get(`/containers/${encodeURIComponent(name)}`),
   containerLogs: (name, tail = 300) =>

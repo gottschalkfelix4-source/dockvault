@@ -220,6 +220,13 @@ async def stream(request: Request) -> StreamingResponse:
 
 # ---------------------------------------------------------------- Container
 
+@router.get("/backup-roots/detect")
+def detect_backup_roots() -> dict[str, Any]:
+    """Vorschlaege fuer Quellverzeichnisse aus den tatsaechlichen Container-Mounts."""
+    return {"suggestions": backup.detect_roots(),
+            "configured": config.get("backup_roots", [])}
+
+
 @router.get("/containers")
 def list_containers() -> dict[str, Any]:
     try:

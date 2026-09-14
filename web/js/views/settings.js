@@ -2,6 +2,8 @@ import { api } from '../api.js';
 import { html, raw, bytes, esc, on } from '../util.js';
 import { toast } from '../components.js';
 
+const NEWLINE = String.fromCharCode(10);   // Zeilentrenner der Pfad-Textfelder
+
 const SMB_VERSIONS = [
   ['3.1.1', 'SMB 3.1.1 — neueste, sicherste'],
   ['3.0', 'SMB 3.0 — empfohlen, sehr kompatibel'],
@@ -30,46 +32,26 @@ export default {
           <div class="stack">
             <label class="field">Sicherungsumfang
               <select data-key="mount_scope">
-                <option value="appdata" ${settings.mount_scope === 'all' ? '' : raw('selected')}>
-                  Nur Konfiguration — appdata und Docker-Volumes (empfohlen)</option>
+                <option value="roots" ${settings.mount_scope === 'all' ? '' : raw('selected')}>
+                  Nur aus den Quellverzeichnissen (empfohlen)</option>
                 <option value="all" ${settings.mount_scope === 'all' ? raw('selected') : ''}>
                   Alle Mounts — auch Medien- und Datenpfade</option>
               </select></label>
-            <div class="notice ${settings.mount_scope === 'all' ? 'warn' : 'info'}">
-              ${settings.mount_scope === 'all'
-                ? raw(`<strong>Achtung:</strong> Auch Medienbibliotheken und Downloads werden
-                    mitgesichert. Bei Plex oder Immich können das schnell mehrere Terabyte sein.`)
-                : raw(`Gesichert werden nur Pfade unterhalb von <code>appdata</code> sowie benannte
-                    Docker-Volumes — also die Konfiguration. Medienbibliotheken, Downloads und
-                    andere Shares bleiben außen vor. Was ein Container konkret mitnimmt, zeigt
-                    „Details" auf der Container-Seite.`)}
+
+            <label class="field">Quellverzeichnisse — ein Pfad pro Zeile
+              <textarea data-key="backup_roots" style="min-height:88px"
+                placeholder="/mnt/work/appdata&#10;/mnt/cache/appdata&#10;/mnt/user/appdata"
+                >${(settings.backup_roots || []).join('\n')}</textarea></label>
+            <div class="row" style="margin-top:-4px">
+              <button class="btn sm" data-act="detect-roots">Verzeichnisse erkennen</button>
+              <span class="muted" style="font-size:12px">
+                durchsucht alle Container nach appdata-Verzeichnissen</span>
             </div>
+            <div data-roots-result></div>
 
-            <div class="grid cols-2">
-              <label class="field">Verzeichnisname für Konfiguration
-                <input type="text" data-key="appdata_dirname"
-                       value="${settings.appdata_dirname}"></label>
-              <label class="field">Erlaubte Tiefe darunter
-                <input type="number" data-key="appdata_max_depth" min="0" max="6"
-                       value="${String(settings.appdata_max_depth)}"></label>
+            <div class="notice ${rootsNoticeKind(settings)}">
+              ${raw(rootsNotice(settings))}
             </div>
-            <p class="muted" style="margin:-4px 0 0;font-size:12px">
-              Erkannt wird jedes Verzeichnis mit diesem Namen — also
-              <code>/mnt/user/appdata/…</code> genauso wie
-              <code>/mnt/work/appdata/…</code> oder <code>/mnt/cache/appdata/…</code>.
-              Die Tiefengrenze verhindert, dass durchgereichte Ordner anderer Dienste
-              (etwa <code>…/appdata/sabvpn/Downloads/complete</code>) als eigene
-              Konfiguration gelten.</p>
-
-            <label class="field">Zusätzliche Konfigurations-Wurzeln (ein Pfad pro Zeile, optional)
-              <textarea data-key="appdata_roots" style="min-height:52px"
-                placeholder="/mnt/sonderpool/configs"
-                >${(settings.appdata_roots || []).join('\n')}</textarea></label>
-
-            <label class="field">Zusätzlich sichern, obwohl außerhalb (ein Pfad pro Zeile)
-              <textarea data-key="include_extra_paths" style="min-height:52px"
-                placeholder="/mnt/user/wichtige-daten"
-                >${(settings.include_extra_paths || []).join('\n')}</textarea></label>
 
             <label class="field">Komprimierung
               <select data-key="compression">
@@ -96,7 +78,8 @@ export default {
               <input type="checkbox" data-key="include_binds"
                      ${settings.include_binds ? raw('checked') : ''}>
               <span><span class="t">Bind-Mounts sichern</span>
-                <span class="d">Alles unter <code>/mnt/user/appdata/…</code> und ähnliche Pfade.</span></span></label>
+                <span class="d">Verzeichnisse vom Host. Abschalten heißt: gar keine
+                  Dateien mehr, auch nicht aus den Quellverzeichnissen.</span></span></label>
 
             <label class="check">
               <input type="checkbox" data-key="include_volumes"
@@ -157,6 +140,8 @@ export default {
                 <textarea data-key="exclude_containers" style="min-height:70px"
                   >${(settings.exclude_containers || []).join('\n')}</textarea></label>
               <label class="field">Host-Pfade, die nie gesichert werden
+                (gilt samt Unterordnern — so lässt sich z. B.
+                <code>…/appdata/sabvpn/Downloads</code> aus einem Quellverzeichnis ausklammern)
                 <textarea data-key="exclude_paths" style="min-height:90px"
                   >${(settings.exclude_paths || []).join('\n')}</textarea></label>
               <label class="field">Dateimuster (glob, z. B. *.sock oder **/cache/**)
@@ -215,6 +200,43 @@ export default {
       } catch (error) { toast(error.message, 'err'); button.disabled = false; }
     });
 
+    // --- Quellverzeichnisse erkennen ------------------------------------
+    on(root, '[data-act="detect-roots"]', async (button) => {
+      const box = root.querySelector('[data-roots-result]');
+      const field = root.querySelector('[data-key="backup_roots"]');
+      button.disabled = true;
+      box.innerHTML = '<div class="notice info">Container werden durchsucht …</div>';
+      try {
+        const { suggestions } = await api.detectRoots();
+        if (!suggestions.length) {
+          box.innerHTML = `<div class="notice warn">Keine appdata-Verzeichnisse gefunden.
+            Trag die Pfade von Hand ein.</div>`;
+        } else {
+          const current = new Set(field.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
+          box.innerHTML = html`
+            <div class="notice ok">
+              <strong>Gefunden:</strong>
+              <ul>${suggestions.map((entry) => html`
+                <li><code>${entry.path}</code> — ${String(entry.count)} Container
+                  (${entry.containers.slice(0, 6).join(', ')}${
+                    entry.containers.length > 6 ? ' …' : ''})
+                  ${current.has(entry.path) ? raw('<span class="badge ok">bereits drin</span>')
+                                            : ''}</li>`)}</ul>
+              <button class="btn sm" data-act="apply-roots" style="margin-top:8px">
+                Alle übernehmen</button>
+            </div>`;
+          box.querySelector('[data-act="apply-roots"]').addEventListener('click', () => {
+            const merged = [...new Set([...current, ...suggestions.map((e) => e.path)])];
+            field.value = merged.join(NEWLINE);
+            toast('Übernommen — noch oben rechts speichern', 'ok');
+          });
+        }
+      } catch (error) {
+        box.innerHTML = html`<div class="notice err">${error.message}</div>`;
+      }
+      button.disabled = false;
+    });
+
     // --- Backup-Ziel ---------------------------------------------------
     const typeSelect = root.querySelector('[data-key="target_type"]');
     typeSelect?.addEventListener('change', () => {
@@ -271,6 +293,29 @@ export default {
     });
   },
 };
+
+function rootsNoticeKind(settings) {
+  if (settings.mount_scope === 'all') return 'warn';
+  return (settings.backup_roots || []).length ? 'info' : 'err';
+}
+
+function rootsNotice(settings) {
+  if (settings.mount_scope === 'all') {
+    return `<strong>Achtung:</strong> Die Quellverzeichnisse werden ignoriert, jeder Mount
+      wird archiviert — auch Mediatheken und Downloads. Bei Plex oder Immich sind das
+      schnell mehrere Terabyte.`;
+  }
+  if (!(settings.backup_roots || []).length) {
+    return `<strong>Noch kein Quellverzeichnis hinterlegt.</strong> Von den Containern werden
+      derzeit nur Konfiguration, Template und benannte Volumes gesichert — keine Dateien.
+      Klick auf „Verzeichnisse erkennen".`;
+  }
+  return `Gesichert wird ausschließlich, was unterhalb dieser Verzeichnisse liegt — plus
+    benannte Docker-Volumes, die Container-Konfiguration und das Unraid-Template. Alles
+    andere bleibt außen vor, Mediatheken können also gar nicht erst hineinrutschen.
+    Einzelne Unterordner lassen sich weiter unten unter <em>Host-Pfade, die nie gesichert
+    werden</em> ausklammern.`;
+}
 
 // ---------------------------------------------------------------- Backup-Ziel
 
