@@ -1,0 +1,466 @@
+"""Backup-Engine: sichert Konfiguration, Unraid-Template und alle Nutzdaten eines Containers."""
+from __future__ import annotations
+
+import json
+import shutil
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from . import archive, config, db, docker_api, events, unraid
+from .runner import JobContext
+
+MANIFEST_SCHEMA = 2
+MANIFEST_NAME = "manifest.json"
+
+
+def backup_root(container: str) -> Path:
+    return config.BACKUP_DIR / _slug(container)
+
+
+def _slug(value: str) -> str:
+    return "".join(c if c.isalnum() or c in "._-" else "-" for c in value)
+
+
+def new_backup_id() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+# ---------------------------------------------------------------- Planung
+
+def plan(container_name: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Was wuerde gesichert? Wird vom UI fuer die Vorschau genutzt."""
+    options = _merge_options(options)
+    attrs = docker_api.inspect(container_name)
+    artifacts = _collect_artifacts(attrs, options)
+    excludes = options["exclude_patterns"]
+    total = 0
+    for art in artifacts:
+        source = Path(art["source"])
+        if source.exists():
+            size, files = archive.measure(source, excludes)
+            art["estimated_bytes"] = size
+            art["files"] = files
+            total += size
+        else:
+            art["estimated_bytes"] = 0
+            art["files"] = 0
+            art["missing"] = True
+    template = unraid.read_template(container_name)
+    return {
+        "container": container_name,
+        "artifacts": artifacts,
+        "estimated_bytes": total,
+        "template": {"present": bool(template), "file": template[0] if template else None,
+                     "will_generate": not template and options["generate_missing_template"]},
+        "options": options,
+    }
+
+
+def _merge_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    settings = config.all_settings()
+    merged = {
+        "compression": settings["compression"],
+        "compression_level": settings["compression_level"],
+        "stop_container": settings["stop_container"],
+        "include_volumes": settings["include_volumes"],
+        "include_binds": settings["include_binds"],
+        "include_template": settings["include_template"],
+        "generate_missing_template": settings["generate_missing_template"],
+        "exclude_paths": settings["exclude_paths"],
+        "exclude_patterns": settings["exclude_patterns"],
+        "max_artifact_gb": settings["max_artifact_gb"],
+        "verify_checksums": settings["verify_checksums"],
+    }
+    if options:
+        merged.update({k: v for k, v in options.items() if v is not None})
+    return merged
+
+
+def _collect_artifacts(attrs: dict[str, Any], options: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ermittelt alle zu sichernden Mounts eines Containers."""
+    out: list[dict[str, Any]] = []
+    excluded_paths = set(options["exclude_paths"])
+    seen: set[str] = set()
+
+    for mount in attrs.get("Mounts") or []:
+        mtype = mount.get("Type")
+        destination = mount.get("Destination") or ""
+        source = mount.get("Source") or ""
+        name = mount.get("Name") or ""
+
+        if destination in excluded_paths or source in excluded_paths:
+            continue
+        if mtype == "bind" and not options["include_binds"]:
+            continue
+        if mtype == "volume" and not options["include_volumes"]:
+            continue
+        if mtype == "tmpfs":
+            continue
+
+        if mtype == "volume":
+            mountpoint = source or docker_api.volume_mountpoint(name) or ""
+            # Im Container liegen Volumes unter dem gemounteten Volume-Verzeichnis
+            local = _map_volume_path(name, mountpoint)
+            key = f"volume:{name}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "kind": "volume", "name": name, "source": local,
+                "original_source": mountpoint, "destination": destination,
+                "rw": mount.get("RW", True), "driver": mount.get("Driver", "local"),
+            })
+        else:
+            key = f"bind:{source}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "kind": "bind", "name": Path(source).name or _slug(destination),
+                "source": source, "original_source": source, "destination": destination,
+                "rw": mount.get("RW", True),
+            })
+    return out
+
+
+def _map_volume_path(name: str, mountpoint: str) -> str:
+    """Volume-Mountpoint auf den im Container sichtbaren Pfad abbilden."""
+    candidate = config.DOCKER_VOLUMES_DIR / name / "_data"
+    if candidate.exists():
+        return str(candidate)
+    return mountpoint
+
+
+# ---------------------------------------------------------------- Ausfuehrung
+
+def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
+        options: dict[str, Any] | None = None) -> dict[str, Any]:
+    opts = _merge_options(options)
+    started = time.monotonic()
+    backup_id = new_backup_id()
+
+    if container_name in config.get("exclude_containers", []):
+        raise ValueError(f"Container '{container_name}' steht auf der Ausschlussliste")
+
+    ctx.step(f"Backup '{container_name}' wird vorbereitet", 2)
+    attrs = docker_api.inspect(container_name)
+    cfg = attrs.get("Config") or {}
+    image = cfg.get("Image") or ""
+    was_running = bool((attrs.get("State") or {}).get("Running"))
+
+    target_dir = backup_root(container_name) / backup_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = target_dir / "data"
+    data_dir.mkdir(exist_ok=True)
+
+    db.upsert_backup({
+        "id": f"{_slug(container_name)}/{backup_id}", "container": container_name,
+        "created_at": db.now_iso(), "status": "running", "trigger": trigger,
+        "image": image, "path": str(target_dir),
+    })
+    db.add_event("backup.started", f"Backup von {container_name} gestartet",
+                 container=container_name, job_id=ctx.job_id)
+
+    artifacts = _collect_artifacts(attrs, opts)
+    ctx.log(f"{len(artifacts)} Datenquelle(n) gefunden, Image: {image}")
+
+    # --- Konfiguration sichern (immer, auch wenn Daten scheitern) --------
+    (target_dir / "inspect.json").write_text(
+        json.dumps(attrs, indent=2, ensure_ascii=False), "utf-8")
+    networks = _snapshot_networks(attrs)
+    (target_dir / "networks.json").write_text(
+        json.dumps(networks, indent=2, ensure_ascii=False), "utf-8")
+    ctx.step("Container-Konfiguration gesichert", 6)
+
+    # --- Unraid-Template -------------------------------------------------
+    template_info = _save_template(ctx, container_name, attrs, target_dir, opts)
+
+    # --- Container anhalten ----------------------------------------------
+    stopped_by_us = False
+    if opts["stop_container"] and was_running and artifacts:
+        ctx.step(f"Container '{container_name}' wird angehalten (konsistente Sicherung)", 8)
+        try:
+            docker_api.control(container_name, "stop", timeout=60)
+            stopped_by_us = True
+            events.publish("container.changed", {"name": container_name, "state": "exited"})
+        except Exception as exc:  # noqa: BLE001
+            ctx.log(f"Konnte Container nicht stoppen, sichere im laufenden Zustand: {exc}", "warn")
+
+    saved: list[dict[str, Any]] = []
+    total_source = 0
+    total_archive = 0
+    failures: list[str] = []
+
+    try:
+        span = 82.0 / max(len(artifacts), 1)
+        for index, art in enumerate(artifacts):
+            ctx.check_cancel()
+            base = 10 + index * span
+            source = Path(art["source"])
+            label = f"{art['kind']}:{art['name']}"
+
+            if not source.exists():
+                ctx.log(f"{label} - Quelle {source} nicht gefunden, uebersprungen", "warn")
+                saved.append({**art, "skipped": True, "reason": "Quelle nicht gefunden"})
+                continue
+
+            limit_gb = opts["max_artifact_gb"]
+            if limit_gb:
+                size, _ = archive.measure(source, opts["exclude_patterns"])
+                if size > limit_gb * 1024 ** 3:
+                    ctx.log(f"{label} - {_human(size)} ueberschreitet Limit "
+                            f"({limit_gb} GB), uebersprungen", "warn")
+                    saved.append({**art, "skipped": True,
+                                  "reason": f"groesser als {limit_gb} GB"})
+                    continue
+
+            compression = archive.choose_compression(opts["compression"])
+            filename = f"{art['kind']}-{_slug(art['name'])}{archive.suffix_for(compression)}"
+            dest = data_dir / filename
+            ctx.step(f"Sichere {label} ({art['destination']})", base)
+
+            def on_progress(done: int, total: int, _base=base, _span=span, _label=label) -> None:
+                pct = _base + (_span * (done / total if total else 1))
+                ctx.progress(pct, f"{_label}: {_human(done)} / {_human(total)}")
+
+            try:
+                result = archive.pack(source, dest, compression=compression,
+                                      level=opts["compression_level"],
+                                      excludes=opts["exclude_patterns"],
+                                      progress=on_progress)
+            except Exception as exc:  # noqa: BLE001
+                ctx.log(f"{label} fehlgeschlagen: {exc}", "error")
+                failures.append(f"{label}: {exc}")
+                saved.append({**art, "skipped": True, "reason": str(exc), "failed": True})
+                dest.unlink(missing_ok=True)
+                continue
+
+            total_source += result["source_bytes"]
+            total_archive += result["archive_bytes"]
+            ratio = (result["archive_bytes"] / result["source_bytes"] * 100) \
+                if result["source_bytes"] else 100
+            ctx.log(f"{label}: {result['files']} Dateien, {_human(result['source_bytes'])} "
+                    f"-> {_human(result['archive_bytes'])} ({ratio:.0f}%)")
+            if result["skipped_count"]:
+                ctx.log(f"{label}: {result['skipped_count']} Eintraege uebersprungen", "warn")
+            saved.append({**art, "file": filename, "skipped": False, **result})
+    finally:
+        if stopped_by_us:
+            ctx.step(f"Container '{container_name}' wird wieder gestartet", 94)
+            try:
+                docker_api.control(container_name, "start")
+                events.publish("container.changed", {"name": container_name, "state": "running"})
+            except Exception as exc:  # noqa: BLE001
+                ctx.log(f"Container konnte nicht neu gestartet werden: {exc}", "error")
+                db.add_event("container.start_failed",
+                             f"{container_name} konnte nach dem Backup nicht starten: {exc}",
+                             level="error", container=container_name, job_id=ctx.job_id)
+
+    duration = time.monotonic() - started
+    status = "completed" if not failures else ("partial" if saved else "failed")
+
+    manifest = {
+        "schema": MANIFEST_SCHEMA,
+        "id": backup_id,
+        "backup_ref": f"{_slug(container_name)}/{backup_id}",
+        "container": {
+            "name": container_name,
+            "id": attrs.get("Id", "")[:12],
+            "image": image,
+            "image_id": attrs.get("Image", ""),
+            "created": attrs.get("Created"),
+            "was_running": was_running,
+        },
+        "created_at": db.now_iso(),
+        "duration_s": round(duration, 2),
+        "trigger": trigger,
+        "status": status,
+        "job_id": ctx.job_id,
+        "compression": archive.choose_compression(opts["compression"]),
+        "source_bytes": total_source,
+        "archive_bytes": total_archive,
+        "template": template_info,
+        "artifacts": saved,
+        "networks": networks,
+        "failures": failures,
+        "options": opts,
+        "host": {"unraid_templates": str(config.TEMPLATES_DIR)},
+    }
+    (target_dir / MANIFEST_NAME).write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), "utf-8")
+
+    db.upsert_backup({
+        "id": manifest["backup_ref"], "container": container_name,
+        "created_at": manifest["created_at"], "finished_at": db.now_iso(),
+        "status": status, "trigger": trigger, "image": image,
+        "source_bytes": total_source, "archive_bytes": total_archive,
+        "duration_s": round(duration, 2), "has_template": template_info.get("present"),
+        "path": str(target_dir), "manifest": manifest,
+        "error": "; ".join(failures) if failures else None,
+    })
+    db.add_event("backup.completed" if status == "completed" else "backup.partial",
+                 f"Backup von {container_name} {'abgeschlossen' if status == 'completed' else 'mit Fehlern beendet'}"
+                 f" ({_human(total_archive)}, {duration:.0f}s)",
+                 level="info" if status == "completed" else "warn",
+                 container=container_name, job_id=ctx.job_id,
+                 backup_id=manifest["backup_ref"],
+                 detail={"source_bytes": total_source, "archive_bytes": total_archive})
+
+    ctx.step(f"Backup abgeschlossen: {_human(total_archive)} in {duration:.0f}s", 98)
+    apply_retention(container_name, ctx)
+    ctx.progress(100, "Fertig")
+    events.publish("backup.created", {"container": container_name,
+                                      "backup_id": manifest["backup_ref"], "status": status})
+    return manifest
+
+
+def _snapshot_networks(attrs: dict[str, Any]) -> list[dict[str, Any]]:
+    """Netzwerk-Definitionen mitsichern, damit sie beim Restore neu entstehen koennen."""
+    out = []
+    networks = ((attrs.get("NetworkSettings") or {}).get("Networks") or {})
+    for name, entry in networks.items():
+        record: dict[str, Any] = {
+            "name": name,
+            "aliases": entry.get("Aliases") or [],
+            "ipam_config": entry.get("IPAMConfig") or {},
+            "mac_address": entry.get("MacAddress"),
+        }
+        try:
+            net = docker_api.client().networks.get(name)
+            record["driver"] = net.attrs.get("Driver")
+            record["ipam"] = net.attrs.get("IPAM")
+            record["internal"] = net.attrs.get("Internal", False)
+            record["options"] = net.attrs.get("Options") or {}
+        except Exception:  # noqa: BLE001 - Netz evtl. schon weg
+            record["driver"] = "bridge"
+        out.append(record)
+    return out
+
+
+def _save_template(ctx: JobContext, container_name: str, attrs: dict[str, Any],
+                   target_dir: Path, opts: dict[str, Any]) -> dict[str, Any]:
+    if not opts["include_template"]:
+        return {"present": False, "source": "disabled"}
+
+    existing = unraid.read_template(container_name)
+    if existing:
+        filename, content = existing
+        (target_dir / "template.xml").write_text(content, "utf-8")
+        ctx.log(f"Unraid-Template gesichert: {filename}")
+        return {"present": True, "source": "unraid", "file": filename,
+                "stored_as": "template.xml"}
+
+    if not opts["generate_missing_template"]:
+        ctx.log("Kein Unraid-Template vorhanden", "warn")
+        return {"present": False, "source": "missing"}
+
+    try:
+        generated = unraid.generate_template(attrs, container_name=container_name)
+        (target_dir / "template.xml").write_text(generated, "utf-8")
+        ctx.log("Kein Template gefunden - aus der Container-Konfiguration erzeugt")
+        return {"present": True, "source": "generated",
+                "file": unraid.template_filename(container_name), "stored_as": "template.xml"}
+    except Exception as exc:  # noqa: BLE001
+        ctx.log(f"Template konnte nicht erzeugt werden: {exc}", "warn")
+        return {"present": False, "source": "error", "error": str(exc)}
+
+
+# ---------------------------------------------------------------- Aufbewahrung
+
+def apply_retention(container_name: str, ctx: JobContext | None = None) -> list[str]:
+    settings = config.all_settings()
+    if not settings.get("retention_enabled", True):
+        return []
+
+    keep_last = int(settings.get("retention_keep_last") or 0)
+    keep_days = int(settings.get("retention_keep_days") or 0)
+    backups = db.list_backups(container=container_name, limit=1000)
+    backups = [b for b in backups if b["status"] in ("completed", "partial")]
+    removed: list[str] = []
+
+    cutoff = None
+    if keep_days:
+        cutoff = time.time() - keep_days * 86400
+
+    for index, record in enumerate(backups):
+        if record.get("pinned"):
+            continue
+        too_many = keep_last and index >= keep_last
+        too_old = False
+        if cutoff:
+            try:
+                ts = datetime.fromisoformat(record["created_at"]).timestamp()
+                too_old = ts < cutoff
+            except ValueError:
+                pass
+        # Das jeweils neueste Backup bleibt immer erhalten.
+        if index > 0 and (too_many or too_old):
+            if delete(record["id"]):
+                removed.append(record["id"])
+
+    if removed and ctx:
+        ctx.log(f"Aufbewahrung: {len(removed)} alte Sicherung(en) entfernt")
+    if removed:
+        db.add_event("retention.pruned",
+                     f"{len(removed)} alte Sicherung(en) von {container_name} geloescht",
+                     container=container_name, detail={"removed": removed})
+    return removed
+
+
+def delete(backup_ref: str) -> bool:
+    record = db.get_backup(backup_ref)
+    path = Path(record["path"]) if record else (config.BACKUP_DIR / backup_ref)
+    try:
+        if path.exists() and str(path).startswith(str(config.BACKUP_DIR)):
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        return False
+    db.delete_backup(backup_ref)
+    events.publish("backup.deleted", {"backup_id": backup_ref})
+    return True
+
+
+# ---------------------------------------------------------------- Index
+
+def rescan() -> dict[str, Any]:
+    """Backup-Verzeichnis einlesen - stellt den Index nach einem Datenverlust wieder her."""
+    found = 0
+    added = 0
+    root = config.BACKUP_DIR
+    if not root.is_dir():
+        return {"found": 0, "added": 0}
+    for manifest_path in root.glob("*/*/manifest.json"):
+        found += 1
+        try:
+            manifest = json.loads(manifest_path.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        ref = manifest.get("backup_ref") or \
+            f"{manifest_path.parent.parent.name}/{manifest_path.parent.name}"
+        if db.get_backup(ref):
+            continue
+        container = (manifest.get("container") or {}).get("name") or manifest_path.parent.parent.name
+        db.upsert_backup({
+            "id": ref, "container": container,
+            "created_at": manifest.get("created_at") or db.now_iso(),
+            "finished_at": manifest.get("created_at"), "status": manifest.get("status", "completed"),
+            "trigger": manifest.get("trigger", "manual"),
+            "image": (manifest.get("container") or {}).get("image"),
+            "source_bytes": manifest.get("source_bytes", 0),
+            "archive_bytes": manifest.get("archive_bytes", 0),
+            "duration_s": manifest.get("duration_s", 0),
+            "has_template": (manifest.get("template") or {}).get("present"),
+            "path": str(manifest_path.parent), "manifest": manifest,
+        })
+        added += 1
+    return {"found": found, "added": added}
+
+
+def _human(num: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(num) < 1024:
+            return f"{num:.1f} {unit}" if unit != "B" else f"{int(num)} B"
+        num /= 1024
+    return f"{num:.1f} PB"

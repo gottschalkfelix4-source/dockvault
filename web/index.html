@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DockVault — Docker Backup für Unraid</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">DV</div>
+        <div class="brand-text">
+          <strong>DockVault</strong>
+          <span id="brand-version">—</span>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <a href="#/dashboard"  data-route="dashboard"><span class="ico">◧</span>Übersicht</a>
+        <a href="#/timeline"   data-route="timeline"><span class="ico">≡</span>Zeitstrahl</a>
+        <a href="#/containers" data-route="containers"><span class="ico">▦</span>Container</a>
+        <a href="#/backups"    data-route="backups"><span class="ico">⛃</span>Backups</a>
+        <a href="#/restore"    data-route="restore"><span class="ico">↺</span>Wiederherstellen</a>
+        <a href="#/schedules"  data-route="schedules"><span class="ico">◷</span>Zeitpläne</a>
+        <a href="#/jobs"       data-route="jobs"><span class="ico">⚙</span>Aufträge</a>
+        <a href="#/settings"   data-route="settings"><span class="ico">⚒</span>Einstellungen</a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="statusline" id="status-docker"><i class="dot"></i><span>Docker</span></div>
+        <div class="statusline" id="status-unraid"><i class="dot"></i><span>Unraid-Templates</span></div>
+        <div class="statusline" id="status-stream"><i class="dot"></i><span>Live-Verbindung</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">Übersicht</h1>
+          <p id="page-subtitle" class="muted"></p>
+        </div>
+        <div class="topbar-actions" id="topbar-actions"></div>
+      </header>
+
+      <div id="active-jobs" class="active-jobs" hidden></div>
+      <section id="view" class="view"><div class="loading">Lade …</div></section>
+    </main>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-root"></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

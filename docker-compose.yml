@@ -1,0 +1,26 @@
+services:
+  dockvault:
+    image: ghcr.io/gottschalkfelix4-source/dockvault:latest
+    # Alternativ selbst bauen statt das fertige Image zu ziehen:
+    # build: .
+    container_name: dockvault
+    restart: unless-stopped
+    ports:
+      - "8070:8080"
+    environment:
+      TZ: Europe/Berlin
+      DV_SELF_NAME: dockvault
+    volumes:
+      # Einstellungen und Backup-Index
+      - /mnt/user/appdata/dockvault:/config
+      # Ablage der Sicherungen
+      - /mnt/user/backups/dockvault:/backups
+      # Docker-API: Pflicht fuer Backup und Restore
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Container-Daten (appdata und Shares) - beschreibbar fuer den Restore
+      - /mnt/user:/mnt/user
+      # Unraid-Templates: noetig, damit geloeschte Container wieder
+      # im Docker-Tab der WebGUI auftauchen
+      - /boot/config:/boot/config
+      # Benannte Docker-Volumes
+      - /var/lib/docker/volumes:/var/lib/docker/volumes

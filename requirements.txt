@@ -1,0 +1,6 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+docker==7.1.0
+APScheduler==3.11.0
+zstandard==0.23.0
+croniter==6.0.0

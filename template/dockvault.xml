@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>dockvault</Name>
+  <Repository>ghcr.io/gottschalkfelix4-source/dockvault:latest</Repository>
+  <Registry>https://github.com/gottschalkfelix4-source/dockvault/pkgs/container/dockvault</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <MyMAC/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/gottschalkfelix4-source/dockvault/issues</Support>
+  <Project>https://github.com/gottschalkfelix4-source/dockvault</Project>
+  <ReadMe>https://github.com/gottschalkfelix4-source/dockvault/blob/main/README.md</ReadMe>
+  <Overview>DockVault &#x2013; Backup und Wiederherstellung fuer Docker-Container auf Unraid.&#13;
+&#13;
+Sichert pro Container die komplette Konfiguration (docker inspect), das Unraid-Template und alle Bind-Mounts sowie benannten Volumes als komprimiertes Archiv. Die Web-Oberflaeche zeigt einen Zeitstrahl aller Sicherungen und Ereignisse, erlaubt die Verwaltung der Container (Start/Stop/Neustart/Log) und bietet einen Wiederherstellungs-Assistenten.&#13;
+&#13;
+Wurde ein Container geloescht, legt DockVault ihn exakt aus der Sicherung neu an &#x2013; inklusive Image, Ports, Environment, Labels und Netzwerken &#x2013; und schreibt das passende Unraid-Template zurueck nach templates-user, sodass der Container wieder im Docker-Tab der WebGUI erscheint. Fehlt ein Template (z. B. bei compose-Containern), wird eines aus der gesicherten Konfiguration erzeugt.&#13;
+&#13;
+HINWEIS: Der Container benoetigt den Docker-Socket und damit vollen Zugriff auf den Host. DockVault bringt keine eigene Anmeldung mit &#x2013; nur im vertrauenswuerdigen LAN betreiben oder einen Reverse-Proxy mit Login davorsetzen.</Overview>
+  <Category>Backup: Tools:Utilities:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/gottschalkfelix4-source/dockvault/main/template/dockvault.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/gottschalkfelix4-source/dockvault/main/template/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled>0</DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Web-UI Port" Target="8080" Default="8070" Mode="tcp"
+          Description="Port der Weboberflaeche" Type="Port" Display="always"
+          Required="true" Mask="false">8070</Config>
+  <Config Name="Einstellungen (/config)" Target="/config" Default="/mnt/user/appdata/dockvault"
+          Mode="rw" Description="Datenbank, Index und settings.json" Type="Path"
+          Display="always" Required="true" Mask="false">/mnt/user/appdata/dockvault</Config>
+  <Config Name="Backup-Ablage (/backups)" Target="/backups" Default="/mnt/user/backups/dockvault"
+          Mode="rw" Description="Hier landen die Sicherungsarchive. Am besten ein Share, das nicht auf demselben Datentraeger liegt wie appdata."
+          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/backups/dockvault</Config>
+  <Config Name="Docker-Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock"
+          Mode="rw" Description="Pflicht: Docker-API fuer Backup, Restore und Container-Steuerung"
+          Type="Path" Display="advanced" Required="true" Mask="false">/var/run/docker.sock</Config>
+  <Config Name="Container-Daten (/mnt/user)" Target="/mnt/user" Default="/mnt/user" Mode="rw"
+          Description="appdata und Shares - lesend fuer das Backup, schreibend fuer den Restore"
+          Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user</Config>
+  <Config Name="Unraid-Templates (/boot/config)" Target="/boot/config" Default="/boot/config"
+          Mode="rw" Description="Noetig, damit geloeschte Container mit passendem Template wieder im Docker-Tab erscheinen"
+          Type="Path" Display="advanced" Required="true" Mask="false">/boot/config</Config>
+  <Config Name="Docker-Volumes" Target="/var/lib/docker/volumes" Default="/var/lib/docker/volumes"
+          Mode="rw" Description="Benannte Volumes sichern und zurueckspielen" Type="Path"
+          Display="advanced" Required="false" Mask="false">/var/lib/docker/volumes</Config>
+  <Config Name="Zeitzone" Target="TZ" Default="Europe/Berlin" Mode="" Description="Zeitzone fuer Zeitplaene"
+          Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Berlin</Config>
+  <Config Name="Eigener Containername" Target="DV_SELF_NAME" Default="dockvault" Mode=""
+          Description="Dieser Container sichert sich nie selbst" Type="Variable"
+          Display="advanced" Required="false" Mask="false">dockvault</Config>
+  <TailscaleStateDir/>
+</Container>
