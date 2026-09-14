@@ -43,9 +43,9 @@ HINWEIS: Der Container benoetigt den Docker-Socket und damit vollen Zugriff auf 
   <Config Name="Docker-Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock"
           Mode="rw" Description="Pflicht: Docker-API fuer Backup, Restore und Container-Steuerung"
           Type="Path" Display="advanced" Required="true" Mask="false">/var/run/docker.sock</Config>
-  <Config Name="Container-Daten (/mnt/user)" Target="/mnt/user" Default="/mnt/user" Mode="rw"
-          Description="appdata und Shares - lesend fuer das Backup, schreibend fuer den Restore"
-          Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user</Config>
+  <Config Name="Speicher (/mnt)" Target="/mnt" Default="/mnt" Mode="rw"
+          Description="Alle Pools, Shares und Platten - lesend fuer das Backup, schreibend fuer den Restore. Ein einzelner Mount deckt /mnt/user, /mnt/cache und frei benannte Pools wie /mnt/work gleichermassen ab."
+          Type="Path" Display="advanced" Required="true" Mask="false">/mnt</Config>
   <Config Name="Unraid-Templates (/boot/config)" Target="/boot/config" Default="/boot/config"
           Mode="rw" Description="Noetig, damit geloeschte Container mit passendem Template wieder im Docker-Tab erscheinen"
           Type="Path" Display="advanced" Required="true" Mask="false">/boot/config</Config>

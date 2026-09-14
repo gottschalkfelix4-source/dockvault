@@ -22,8 +22,9 @@ services:
       - /mnt/user/backups/dockvault:/backups
       # Docker-API: Pflicht fuer Backup und Restore
       - /var/run/docker.sock:/var/run/docker.sock
-      # Container-Daten (appdata und Shares) - beschreibbar fuer den Restore
-      - /mnt/user:/mnt/user
+      # Alle Pools, Shares und Platten - ein Mount deckt /mnt/user, /mnt/cache
+      # und frei benannte Pools wie /mnt/work gleichermassen ab
+      - /mnt:/mnt
       # Unraid-Templates: noetig, damit geloeschte Container wieder
       # im Docker-Tab der WebGUI auftauchen
       - /boot/config:/boot/config

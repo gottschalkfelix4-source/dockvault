@@ -139,7 +139,7 @@ Backup. Sonst lägen die Archive unbemerkt im Container und wären beim nächste
 | `/var/run/docker.sock` | `/var/run/docker.sock` | **Pflicht** — Docker-API für Backup, Restore, Steuerung |
 | `/mnt/user/appdata/dockvault` | `/config` | Einstellungen und Backup-Index (SQLite) |
 | `/mnt/user/backups/dockvault` | `/backups` | Die Sicherungsarchive (entfällt praktisch, wenn ein SMB-Ziel genutzt wird) |
-| `/mnt/user` | `/mnt/user` | Container-Daten lesen und beim Restore zurückschreiben |
+| `/mnt` | `/mnt` | Alle Pools, Shares und Platten — lesen fürs Backup, schreiben für den Restore. Ein Mount statt einer Liste, weil Unraid-Pools frei benannt sind (`/mnt/work`, `/mnt/medien`, …) |
 | `/boot/config` | `/boot/config` | Unraid-Templates lesen und schreiben |
 | `/var/lib/docker/volumes` | `/var/lib/docker/volumes` | Benannte Volumes |
 
@@ -256,8 +256,9 @@ MIT — siehe [LICENSE](LICENSE).
 
 ## Sicherheitsgrenzen
 
-* Restore schreibt ausschließlich unterhalb von `/mnt/user`, `/mnt/cache`, `/mnt/disk1`,
-  `/mnt/disks`, `/var/lib/docker/volumes` und `/boot/config`. Alles andere wird abgelehnt.
+* Restore schreibt ausschließlich unterhalb von `/mnt`, `/var/lib/docker/volumes` und
+  `/boot/config` — also im Speicherbereich. Alles andere (`/etc`, `/usr`, `/root` …)
+  wird abgelehnt.
 * Beim Entpacken werden absolute Pfade, `..`-Segmente und aus dem Ziel herausführende
   Links verworfen.
 * Ein vorhandenes Template wird vor dem Überschreiben als `.bak-<Zeitstempel>` gesichert.

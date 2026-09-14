@@ -21,11 +21,11 @@ DOCKER_SOCKET = os.environ.get("DV_DOCKER_SOCKET", "/var/run/docker.sock")
 SELF_NAME = os.environ.get("DV_SELF_NAME", "dockvault")
 
 # Wohin darf ein Restore schreiben? Alles ausserhalb wird abgelehnt.
+# /mnt deckt alle Unraid-Pools, Shares, Einzelplatten und Remotes ab. Pools heissen
+# frei waehlbar, eine Aufzaehlung waere zwangslaeufig unvollstaendig. Alles ausserhalb
+# (/etc, /usr, /root ...) bleibt gesperrt.
 RESTORE_ROOTS = [
-    "/mnt/user",
-    "/mnt/cache",
-    "/mnt/disk1",
-    "/mnt/disks",
+    "/mnt",
     "/var/lib/docker/volumes",
     "/boot/config",
 ]
