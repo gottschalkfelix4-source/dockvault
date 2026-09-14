@@ -43,11 +43,9 @@ DEFAULTS: dict[str, Any] = {
     "smb_options": "",               # zusaetzliche mount-Optionen
     # Sicherungsumfang: was von den Mounts eines Containers gesichert wird
     "mount_scope": "appdata",        # appdata = nur Konfiguration | all = alle Mounts
-    "appdata_roots": [               # Was als Konfiguration gilt
-        "/mnt/user/appdata",
-        "/mnt/cache/appdata",
-        "/mnt/user0/appdata",
-    ],
+    "appdata_dirname": "appdata",    # Verzeichnisname, der Konfiguration markiert
+    "appdata_max_depth": 2,          # Ebenen darunter, die noch als Konfiguration gelten
+    "appdata_roots": [],             # Zusaetzliche Wurzeln bei abweichendem Layout
     "include_extra_paths": [],       # Zusaetzlich sichern, obwohl kein appdata
     # Sicherung
     "compression": "zstd",          # zstd | gzip | none

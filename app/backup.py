@@ -79,6 +79,8 @@ def _merge_options(options: dict[str, Any] | None) -> dict[str, Any]:
         "exclude_paths": settings["exclude_paths"],
         "exclude_patterns": settings["exclude_patterns"],
         "mount_scope": settings["mount_scope"],
+        "appdata_dirname": settings["appdata_dirname"],
+        "appdata_max_depth": settings["appdata_max_depth"],
         "appdata_roots": settings["appdata_roots"],
         "include_extra_paths": settings["include_extra_paths"],
         "max_artifact_gb": settings["max_artifact_gb"],
@@ -99,13 +101,50 @@ def _under(path: str, roots: list[str]) -> bool:
     return False
 
 
+def _depth_below(path: str, base: str) -> int | None:
+    """Wie viele Ebenen liegt ``path`` unter ``base``? None, wenn ausserhalb."""
+    norm = path.rstrip("/")
+    root = base.rstrip("/")
+    if norm == root:
+        return 0
+    if not norm.startswith(root + "/"):
+        return None
+    return len([p for p in norm[len(root) + 1:].split("/") if p])
+
+
+def appdata_depth(source: str, options: dict[str, Any]) -> int | None:
+    """Ebenen unterhalb eines appdata-Verzeichnisses, oder None.
+
+    Unraid-Pools heissen frei waehlbar - appdata liegt genauso unter
+    ``/mnt/user/appdata`` wie unter ``/mnt/work/appdata`` oder ``/mnt/cache/appdata``.
+    Eine feste Pfadliste geht deshalb zwangslaeufig an realen Setups vorbei; wir
+    erkennen stattdessen jedes Verzeichnis mit dem passenden Namen.
+    """
+    for root in options.get("appdata_roots") or []:
+        depth = _depth_below(source, str(root))
+        if depth is not None:
+            return depth
+
+    dirname = (options.get("appdata_dirname") or "appdata").strip("/")
+    parts = [p for p in source.split("/") if p]
+    for index, part in enumerate(parts):
+        if part.lower() == dirname.lower():
+            return len(parts) - index - 1
+    return None
+
+
 def classify_mount(source: str, kind: str, options: dict[str, Any]) -> dict[str, Any]:
     """Konfiguration oder Nutzdaten?
 
-    Auf Unraid liegt die Konfiguration eines Containers unter ``appdata``, waehrend
-    andere Shares die eigentlichen Nutzdaten enthalten - Plex' Medienbibliothek,
-    Immichs Fotos, Downloads. Die gehoeren nicht in ein Container-Backup: sie sind
-    um Groessenordnungen groesser und werden typischerweise anders gesichert.
+    Die Konfiguration eines Containers liegt unter ``appdata``, waehrend andere
+    Shares die eigentlichen Nutzdaten enthalten - Plex' Mediathek, Immichs Fotos,
+    Downloads. Die gehoeren nicht in ein Container-Backup: sie sind um
+    Groessenordnungen groesser und werden typischerweise anders gesichert.
+
+    Die Tiefengrenze faengt einen haeufigen Fall ab: Container reichen sich
+    gegenseitig Unterordner durch, etwa den Download-Ordner eines anderen Dienstes
+    unter ``.../appdata/sabvpn/Downloads/complete``. Das liegt zwar unter appdata,
+    ist aber Nutzdaten - und gehoert nicht ins Backup des lesenden Containers.
     """
     if kind == "volume":
         return {"category": "volume", "include": True,
@@ -113,12 +152,20 @@ def classify_mount(source: str, kind: str, options: dict[str, Any]) -> dict[str,
     if _under(source, options.get("include_extra_paths") or []):
         return {"category": "config", "include": True,
                 "reason": "Manuell zur Sicherung hinzugefuegt"}
-    if _under(source, options.get("appdata_roots") or []):
+
+    depth = appdata_depth(source, options)
+    max_depth = int(options.get("appdata_max_depth", 2) or 2)
+    if depth is not None and depth <= max_depth:
         return {"category": "config", "include": True,
                 "reason": "Konfiguration (appdata)"}
+
     if options.get("mount_scope", "appdata") == "all":
         return {"category": "data", "include": True,
                 "reason": "Datenpfad - mitgesichert, weil der Umfang auf 'alle Mounts' steht"}
+    if depth is not None:
+        return {"category": "data", "include": False,
+                "reason": f"Liegt {depth} Ebenen unter appdata - gilt als Datenordner "
+                          f"eines anderen Dienstes, nicht als eigene Konfiguration"}
     return {"category": "data", "include": False,
             "reason": "Datenpfad ausserhalb von appdata - nicht gesichert"}
 

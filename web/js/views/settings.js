@@ -45,12 +45,29 @@ export default {
                     „Details" auf der Container-Seite.`)}
             </div>
 
-            <label class="field">Was als Konfiguration gilt (ein Pfad pro Zeile)
-              <textarea data-key="appdata_roots" style="min-height:70px"
+            <div class="grid cols-2">
+              <label class="field">Verzeichnisname für Konfiguration
+                <input type="text" data-key="appdata_dirname"
+                       value="${settings.appdata_dirname}"></label>
+              <label class="field">Erlaubte Tiefe darunter
+                <input type="number" data-key="appdata_max_depth" min="0" max="6"
+                       value="${String(settings.appdata_max_depth)}"></label>
+            </div>
+            <p class="muted" style="margin:-4px 0 0;font-size:12px">
+              Erkannt wird jedes Verzeichnis mit diesem Namen — also
+              <code>/mnt/user/appdata/…</code> genauso wie
+              <code>/mnt/work/appdata/…</code> oder <code>/mnt/cache/appdata/…</code>.
+              Die Tiefengrenze verhindert, dass durchgereichte Ordner anderer Dienste
+              (etwa <code>…/appdata/sabvpn/Downloads/complete</code>) als eigene
+              Konfiguration gelten.</p>
+
+            <label class="field">Zusätzliche Konfigurations-Wurzeln (ein Pfad pro Zeile, optional)
+              <textarea data-key="appdata_roots" style="min-height:52px"
+                placeholder="/mnt/sonderpool/configs"
                 >${(settings.appdata_roots || []).join('\n')}</textarea></label>
 
             <label class="field">Zusätzlich sichern, obwohl außerhalb (ein Pfad pro Zeile)
-              <textarea data-key="include_extra_paths" style="min-height:58px"
+              <textarea data-key="include_extra_paths" style="min-height:52px"
                 placeholder="/mnt/user/wichtige-daten"
                 >${(settings.include_extra_paths || []).join('\n')}</textarea></label>
 

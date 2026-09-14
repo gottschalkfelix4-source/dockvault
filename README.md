@@ -76,9 +76,15 @@ Größenordnungen größer und wird sinnvollerweise anders gesichert.
 
 DockVault sichert deshalb standardmäßig **nur**:
 
-* Bind-Mounts unterhalb von `appdata` (einstellbar unter *Was als Konfiguration gilt*)
+* Bind-Mounts unterhalb eines Verzeichnisses namens `appdata`
 * benannte Docker-Volumes
 * die Container-Konfiguration und das Unraid-Template
+
+Erkannt wird der **Verzeichnisname**, nicht ein fester Pfad — Unraid-Pools heißen frei
+wählbar, appdata liegt je nach Setup unter `/mnt/user/appdata`, `/mnt/cache/appdata` oder
+`/mnt/work/appdata`. Eine Tiefengrenze (Vorgabe: 2 Ebenen) sorgt dafür, dass
+durchgereichte Ordner anderer Dienste nicht als eigene Konfiguration durchgehen — etwa
+`…/appdata/sabvpn/Downloads/complete`, das in einem Radarr-Backup nichts verloren hat.
 
 Alles andere wird übersprungen und im Protokoll sowie im Manifest namentlich aufgeführt.
 Die Container-Detailansicht zeigt beide Listen nebeneinander: was gesichert wird und was
