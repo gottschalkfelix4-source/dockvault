@@ -17,12 +17,14 @@ Sichert pro Container die komplette Konfiguration (docker inspect), das Unraid-T
 &#13;
 Wurde ein Container geloescht, legt DockVault ihn exakt aus der Sicherung neu an &#x2013; inklusive Image, Ports, Environment, Labels und Netzwerken &#x2013; und schreibt das passende Unraid-Template zurueck nach templates-user, sodass der Container wieder im Docker-Tab der WebGUI erscheint. Fehlt ein Template (z. B. bei compose-Containern), wird eines aus der gesicherten Konfiguration erzeugt.&#13;
 &#13;
+Als Backup-Ziel dient entweder der gemountete Pfad /backups oder eine SMB-Freigabe, die direkt in der Web-UI eingerichtet wird (Einstellungen -&gt; Backup-Ziel). Fuer SMB sind die Capabilities SYS_ADMIN und DAC_READ_SEARCH noetig - sie stehen bereits in den Extra Parameters.&#13;
+&#13;
 HINWEIS: Der Container benoetigt den Docker-Socket und damit vollen Zugriff auf den Host. DockVault bringt keine eigene Anmeldung mit &#x2013; nur im vertrauenswuerdigen LAN betreiben oder einen Reverse-Proxy mit Login davorsetzen.</Overview>
   <Category>Backup: Tools:Utilities:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/gottschalkfelix4-source/dockvault/main/template/dockvault.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/gottschalkfelix4-source/dockvault/main/template/icon.png</Icon>
-  <ExtraParams/>
+  <ExtraParams>--cap-add SYS_ADMIN --cap-add DAC_READ_SEARCH</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled>0</DateInstalled>
@@ -36,7 +38,7 @@ HINWEIS: Der Container benoetigt den Docker-Socket und damit vollen Zugriff auf 
           Mode="rw" Description="Datenbank, Index und settings.json" Type="Path"
           Display="always" Required="true" Mask="false">/mnt/user/appdata/dockvault</Config>
   <Config Name="Backup-Ablage (/backups)" Target="/backups" Default="/mnt/user/backups/dockvault"
-          Mode="rw" Description="Hier landen die Sicherungsarchive. Am besten ein Share, das nicht auf demselben Datentraeger liegt wie appdata."
+          Mode="rw" Description="Ziel fuer die Sicherungsarchive, wenn kein SMB verwendet wird. Am besten ein Share, das nicht auf demselben Datentraeger liegt wie appdata. Bei SMB-Nutzung wird dieser Pfad ueberlagert."
           Type="Path" Display="always" Required="true" Mask="false">/mnt/user/backups/dockvault</Config>
   <Config Name="Docker-Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock"
           Mode="rw" Description="Pflicht: Docker-API fuer Backup, Restore und Container-Steuerung"

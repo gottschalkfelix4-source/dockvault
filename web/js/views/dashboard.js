@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { html, raw, bytes, ago, date, duration, statusClass, statusLabel, on, shortImage }
+import { html, raw, bytes, ago, date, duration, statusClass, statusLabel, on, shortImage, esc }
   from '../util.js';
 import { toast, confirm } from '../components.js';
 import { openRestoreWizard } from './restore.js';
@@ -173,6 +173,13 @@ function healthNotices(status) {
       Ohne den Mount von <code>/boot/config</code> können gelöschte Container zwar
       technisch wiederhergestellt werden, tauchen aber nicht im Docker-Tab der Unraid-WebGUI auf.
       Erwarteter Pfad: <code>${status.unraid.templates_dir}</code></div>`);
+  }
+  if (status.storage.ready === false) {
+    notices.push(`<div class="notice err"><strong>Backup-Ziel nicht bereit.</strong>
+      ${status.storage.target_type === 'smb'
+        ? 'Die SMB-Freigabe ist nicht eingebunden — Backups sind gesperrt.'
+        : `${esc(status.storage.backup_dir)} ist nicht beschreibbar.`}
+      <a href="#/settings">In den Einstellungen prüfen</a></div>`);
   }
   if (status.storage.total && status.storage.free / status.storage.total < 0.1) {
     notices.push(`<div class="notice warn"><strong>Wenig Speicherplatz.</strong>

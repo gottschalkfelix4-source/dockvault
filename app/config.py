@@ -31,6 +31,16 @@ RESTORE_ROOTS = [
 ]
 
 DEFAULTS: dict[str, Any] = {
+    # Backup-Ziel
+    "target_type": "local",          # local | smb
+    "smb_host": "",
+    "smb_share": "",
+    "smb_path": "",                  # Unterordner in der Freigabe, optional
+    "smb_user": "",
+    "smb_password": "",
+    "smb_domain": "",
+    "smb_version": "3.0",            # auto | 3.1.1 | 3.0 | 2.1 | 1.0
+    "smb_options": "",               # zusaetzliche mount-Optionen
     # Sicherung
     "compression": "zstd",          # zstd | gzip | none
     "compression_level": 6,
@@ -61,6 +71,10 @@ DEFAULTS: dict[str, Any] = {
     "ui_theme": "auto",
 }
 
+# Werte, die die API niemals im Klartext herausgibt
+SECRET_KEYS = {"smb_password"}
+SECRET_MASK = "•" * 8
+
 _lock = threading.RLock()
 _cache: dict[str, Any] | None = None
 
@@ -87,17 +101,33 @@ def get(key: str, default: Any = None) -> Any:
     return all_settings().get(key, DEFAULTS.get(key, default))
 
 
+def public_settings() -> dict[str, Any]:
+    """Wie ``all_settings``, aber Geheimnisse nur als Platzhalter."""
+    data = all_settings()
+    for key in SECRET_KEYS:
+        data[key] = SECRET_MASK if data.get(key) else ""
+    return data
+
+
 def update(patch: dict[str, Any]) -> dict[str, Any]:
     global _cache
     with _lock:
         data = _load()
         for key, value in patch.items():
-            if key in DEFAULTS:
-                data[key] = value
+            if key not in DEFAULTS:
+                continue
+            # Der Platzhalter bedeutet "unveraendert lassen"
+            if key in SECRET_KEYS and value == SECRET_MASK:
+                continue
+            data[key] = value
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         tmp = SETTINGS_PATH.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
         tmp.replace(SETTINGS_PATH)
+        try:
+            SETTINGS_PATH.chmod(0o600)   # enthaelt das SMB-Passwort
+        except OSError:
+            pass
         _cache = data
         return dict(data)
 

@@ -12,7 +12,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import (__version__, backup, config, db, docker_api, events, restore,
-               runner, scheduler, unraid)
+               runner, scheduler, storage, unraid)
 
 router = APIRouter(prefix="/api")
 
@@ -91,11 +91,7 @@ def status() -> dict[str, Any]:
             "templates_available": unraid.available(),
             "template_count": len(unraid.list_templates()),
         },
-        "storage": {
-            "backup_dir": str(config.BACKUP_DIR),
-            "writable": config.BACKUP_DIR.is_dir(),
-            **_disk_usage(config.BACKUP_DIR),
-        },
+        "storage": {"backup_dir": str(config.BACKUP_DIR), **storage.status()},
         "counts": {
             "containers": len(containers),
             "running": sum(1 for c in containers if c["running"]),
@@ -121,17 +117,83 @@ def _disk_usage(path: Path) -> dict[str, Any]:
 
 @router.get("/settings")
 def get_settings() -> dict[str, Any]:
-    return {"settings": config.all_settings(), "defaults": config.DEFAULTS,
-            "restore_roots": config.RESTORE_ROOTS}
+    defaults = {**config.DEFAULTS, **{k: "" for k in config.SECRET_KEYS}}
+    return {"settings": config.public_settings(), "defaults": defaults,
+            "restore_roots": config.RESTORE_ROOTS, "secret_mask": config.SECRET_MASK}
 
 
 @router.put("/settings")
 def put_settings(patch: dict[str, Any]) -> dict[str, Any]:
-    updated = config.update(patch)
+    previous_type = config.get("target_type", "local")
+    config.update(patch)
     db.add_event("settings.changed", "Einstellungen geaendert",
-                 detail={"keys": list(patch.keys())})
+                 detail={"keys": [k for k in patch if k not in config.SECRET_KEYS]})
     scheduler.reload_all()
-    return {"settings": updated}
+
+    # Ein geaendertes Backup-Ziel sofort herstellen, damit der Nutzer direkt sieht,
+    # ob es funktioniert - statt es erst beim naechsten Backup zu merken.
+    target_changed = any(k == "target_type" or k.startswith("smb_") for k in patch)
+    storage_result: dict[str, Any] | None = None
+    if target_changed:
+        try:
+            storage_result = {"ok": True, **storage.apply_target(previous_type)}
+            db.add_event("storage.changed",
+                         f"Backup-Ziel umgestellt auf {config.get('target_type')}")
+        except storage.StorageError as exc:
+            storage_result = {"ok": False, "error": str(exc)}
+            db.add_event("storage.failed", f"Backup-Ziel nicht verfuegbar: {exc}",
+                         level="error")
+
+    return {"settings": config.public_settings(), "storage": storage_result}
+
+
+# ---------------------------------------------------------------- Backup-Ziel
+
+class SmbParams(BaseModel):
+    smb_host: str | None = None
+    smb_share: str | None = None
+    smb_path: str | None = None
+    smb_user: str | None = None
+    smb_password: str | None = None
+    smb_domain: str | None = None
+    smb_version: str | None = None
+    smb_options: str | None = None
+
+
+@router.get("/storage")
+def storage_status() -> dict[str, Any]:
+    return storage.status()
+
+
+@router.post("/storage/test")
+def storage_test(params: SmbParams) -> dict[str, Any]:
+    try:
+        return storage.test_smb(params.model_dump())
+    except storage.StorageError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"Test fehlgeschlagen: {exc}") from exc
+
+
+@router.post("/storage/mount")
+def storage_mount() -> dict[str, Any]:
+    try:
+        result = storage.mount_smb()
+        db.add_event("storage.mounted", f"Backup-Ziel eingebunden: {result['source']}")
+        backup.rescan()
+        return {"ok": True, **result, "status": storage.status()}
+    except storage.StorageError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/storage/unmount")
+def storage_unmount() -> dict[str, Any]:
+    try:
+        result = storage.unmount()
+        db.add_event("storage.unmounted", "Backup-Ziel ausgehaengt")
+        return {"ok": True, **result, "status": storage.status()}
+    except storage.StorageError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/events/stream")

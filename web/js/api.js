@@ -25,6 +25,11 @@ export const api = {
   settings: () => get('/settings'),
   saveSettings: (patch) => put('/settings', patch),
 
+  storage: () => get('/storage'),
+  testStorage: (params) => post('/storage/test', params),
+  mountStorage: () => post('/storage/mount'),
+  unmountStorage: () => post('/storage/unmount'),
+
   containers: () => get('/containers'),
   container: (name) => get(`/containers/${encodeURIComponent(name)}`),
   containerLogs: (name, tail = 300) =>

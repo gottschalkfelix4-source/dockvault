@@ -13,9 +13,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# tar/zstd fuer manuelle Eingriffe, tzdata fuer korrekte Zeitplaene
+# tar/zstd fuer manuelle Eingriffe, tzdata fuer Zeitplaene,
+# cifs-utils fuer SMB-Backup-Ziele (benoetigt zusaetzlich --cap-add SYS_ADMIN)
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tzdata tar zstd curl \
+ && apt-get install -y --no-install-recommends tzdata tar zstd curl cifs-utils \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

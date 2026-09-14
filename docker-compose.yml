@@ -10,6 +10,11 @@ services:
     environment:
       TZ: Europe/Berlin
       DV_SELF_NAME: dockvault
+    # Nur fuer SMB-Backup-Ziele noetig (Einrichtung in der Web-UI).
+    # Bei rein lokalem Ziel koennen beide Zeilen entfallen.
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
     volumes:
       # Einstellungen und Backup-Index
       - /mnt/user/appdata/dockvault:/config

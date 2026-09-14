@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import archive, config, db, docker_api, events, unraid
+from . import archive, config, db, docker_api, events, storage, unraid
 from .runner import JobContext
 
 MANIFEST_SCHEMA = 2
@@ -143,6 +143,9 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
 
     if container_name in config.get("exclude_containers", []):
         raise ValueError(f"Container '{container_name}' steht auf der Ausschlussliste")
+
+    # Niemals ins Container-Dateisystem sichern, wenn das SMB-Ziel fehlt.
+    storage.require_ready()
 
     ctx.step(f"Backup '{container_name}' wird vorbereitet", 2)
     attrs = docker_api.inspect(container_name)

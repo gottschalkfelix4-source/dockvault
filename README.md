@@ -67,13 +67,45 @@ docker build -t dockvault:latest .
 
 Die Web-Oberfläche läuft danach auf `http://<unraid-ip>:8070`.
 
+## Backup-Ziel: lokal oder SMB
+
+Unter **Einstellungen → Backup-Ziel** wird festgelegt, wohin die Archive geschrieben werden.
+
+**Lokaler Pfad** (Voreinstellung) — die Sicherungen landen in dem Verzeichnis, das beim
+Anlegen des Containers auf `/backups` gemountet wurde.
+
+**SMB-Freigabe** — DockVault bindet die Freigabe selbst ein; es ist kein Mount auf dem
+Unraid-Host und kein Unassigned-Devices-Plugin nötig. In der Oberfläche werden Server,
+Freigabe, optionaler Unterordner, Benutzer, Passwort, Domäne und SMB-Version eingetragen.
+**Verbindung testen** prüft Erreichbarkeit, Anmeldung, Schreibrechte und freien Platz,
+ohne das laufende Ziel anzufassen. Ein angegebener Unterordner wird automatisch angelegt,
+falls er noch fehlt.
+
+Dafür braucht der Container zwei Capabilities — im mitgelieferten Template stehen sie
+bereits in den *Extra Parameters*:
+
+```
+--cap-add SYS_ADMIN --cap-add DAC_READ_SEARCH
+```
+
+`SYS_ADMIN` erlaubt das Einhängen, `DAC_READ_SEARCH` braucht `mount.cifs` selbst, um die
+Zugangsdatendatei zu lesen. Fehlt eine davon, nennt DockVault sie beim Test namentlich,
+statt die kryptische Meldung `Unable to apply new capability set.` durchzureichen.
+
+Das Passwort steht in `/config/settings.json` (nur für root lesbar) und wird von der API
+nie im Klartext zurückgegeben. Für den Mount landet es in einer Credentials-Datei unter
+`/run` — nie auf der Kommandozeile, wo es in der Prozessliste sichtbar wäre.
+
+Solange ein eingerichtetes SMB-Ziel **nicht** eingebunden ist, verweigert DockVault jedes
+Backup. Sonst lägen die Archive unbemerkt im Container und wären beim nächsten Neustart weg.
+
 ### Benötigte Mounts
 
 | Host | Im Container | Zweck |
 |---|---|---|
 | `/var/run/docker.sock` | `/var/run/docker.sock` | **Pflicht** — Docker-API für Backup, Restore, Steuerung |
 | `/mnt/user/appdata/dockvault` | `/config` | Einstellungen und Backup-Index (SQLite) |
-| `/mnt/user/backups/dockvault` | `/backups` | Die Sicherungsarchive |
+| `/mnt/user/backups/dockvault` | `/backups` | Die Sicherungsarchive (entfällt praktisch, wenn ein SMB-Ziel genutzt wird) |
 | `/mnt/user` | `/mnt/user` | Container-Daten lesen und beim Restore zurückschreiben |
 | `/boot/config` | `/boot/config` | Unraid-Templates lesen und schreiben |
 | `/var/lib/docker/volumes` | `/var/lib/docker/volumes` | Benannte Volumes |
@@ -146,6 +178,7 @@ app/
   backup.py       Backup-Engine
   restore.py      Restore-Engine
   runner.py       Hintergrund-Jobs mit Live-Fortschritt
+  storage.py      Backup-Ziel: lokal oder SMB einbinden, testen, überwachen
   scheduler.py    Cron-Zeitpläne (APScheduler)
   events.py       Server-Sent-Events an die Oberfläche
 web/              Oberfläche: reine ES-Module, kein Build-Schritt

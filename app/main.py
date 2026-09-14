@@ -11,7 +11,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, api, backup, config, db, docker_api, events, runner, scheduler
+from . import (__version__, api, backup, config, db, docker_api, events, runner,
+               scheduler, storage)
 
 logging.basicConfig(
     level=os.environ.get("DV_LOG_LEVEL", "INFO"),
@@ -39,6 +40,16 @@ async def lifespan(app: FastAPI):
         log.warning("Docker-Socket %s nicht erreichbar - Backup/Restore deaktiviert",
                     config.DOCKER_SOCKET)
 
+    # SMB-Ziel gleich beim Start einbinden, damit Zeitplaene es vorfinden.
+    if config.get("target_type") == "smb":
+        try:
+            result = storage.mount_smb()
+            log.info("SMB-Backup-Ziel eingebunden: %s", result["source"])
+        except storage.StorageError as exc:
+            log.error("SMB-Backup-Ziel konnte nicht eingebunden werden: %s", exc)
+            db.add_event("storage.failed",
+                         f"SMB-Ziel beim Start nicht eingebunden: {exc}", level="error")
+
     stats = backup.rescan()
     if stats["added"]:
         log.info("Index ergaenzt: %s Backup(s) aus dem Dateisystem uebernommen", stats["added"])
@@ -51,6 +62,11 @@ async def lifespan(app: FastAPI):
         log.info("DockVault faehrt herunter")
         scheduler.stop()
         runner.shutdown()
+        if config.get("target_type") == "smb":
+            try:
+                storage.unmount()
+            except storage.StorageError as exc:
+                log.warning("SMB-Ziel konnte nicht ausgehaengt werden: %s", exc)
 
 
 app = FastAPI(title="DockVault", version=__version__, lifespan=lifespan,
