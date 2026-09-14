@@ -55,16 +55,27 @@ export function modal({ title, subtitle = '', body, footer = '', wide = false, o
 export function confirm({ title, message, confirmLabel = 'Bestätigen', danger = false,
                           detail = '' }) {
   return new Promise((resolve) => {
+    // Das Schließen des Dialogs löst onClose aus - auch beim Bestätigen. Ohne
+    // diesen Riegel würde onClose zuerst mit false auflösen und die Zusage des
+    // Nutzers verschlucken, weil ein Promise nur einmal auflöst.
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
     const dialog = modal({
       title,
       body: html`<p style="margin:0">${message}</p>${detail ? raw(detail) : ''}`,
       footer: `<button class="btn" data-close>Abbrechen</button>
                <button class="btn ${danger ? 'danger' : 'primary'}" data-ok>${confirmLabel}</button>`,
-      onClose: () => resolve(false),
+      onClose: () => finish(false),
     });
+
     dialog.root.querySelector('[data-ok]').addEventListener('click', () => {
+      finish(true);
       dialog.close();
-      resolve(true);
     });
   });
 }
