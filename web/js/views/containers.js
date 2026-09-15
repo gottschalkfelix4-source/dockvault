@@ -188,7 +188,7 @@ async function showContainerDetail(name) {
         <div class="table-wrap">
           <table>
             <thead><tr><th>Art</th><th>Host-Pfad</th><th>Im Container</th>
-              <th>Größe</th><th>Dateien</th></tr></thead>
+              <th>Größe</th><th>Dateien</th><th>gefiltert</th></tr></thead>
             <tbody>
               ${plan.artifacts.map((a) => html`
                 <tr>
@@ -197,8 +197,11 @@ async function showContainerDetail(name) {
                   <td class="mono">${a.destination}</td>
                   <td class="mono nowrap">${bytes(a.estimated_bytes)}</td>
                   <td class="mono">${String(a.files)}</td>
+                  <td class="mono nowrap">${a.excluded_bytes
+                    ? raw(`<span class="badge warn" title="${esc(String(a.excluded_files))} Datei(en) durch Dateimuster ausgelassen">−${esc(bytes(a.excluded_bytes))}</span>`)
+                    : '—'}</td>
                 </tr>`)}
-              ${plan.artifacts.length ? '' : raw(`<tr><td colspan="5" class="muted">
+              ${plan.artifacts.length ? '' : raw(`<tr><td colspan="6" class="muted">
                 Keine Konfigurationspfade — es werden nur Container-Konfiguration
                 und Template gesichert.</td></tr>`)}
             </tbody>
@@ -206,6 +209,15 @@ async function showContainerDetail(name) {
         </div>
         <p class="muted" style="margin:0;font-size:12.5px">
           Geschätztes Volumen: <strong>${bytes(plan.estimated_bytes)}</strong> vor Komprimierung</p>
+
+        ${plan.excluded_by_patterns_bytes ? raw(html`
+          <div class="notice info">
+            <strong>${bytes(plan.excluded_by_patterns_bytes)}</strong> wurden von den
+            Dateimustern herausgefiltert und fehlen deshalb in der Summe — das erklärt den
+            Unterschied zu <span class="mono">du -sh</span>. Aktive Muster:
+            <span class="mono">${(plan.exclude_patterns || []).join('  ')}</span>.
+            Änderbar unter <a href="#/settings">Einstellungen → Ausschlüsse</a>.
+          </div>`) : ''}
 
         ${(plan.skipped || []).length ? raw(html`
           <h3 style="margin-top:6px">Bewusst übersprungen</h3>

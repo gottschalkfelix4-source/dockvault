@@ -85,21 +85,48 @@ def _excluded(rel_path: str, patterns: list[str]) -> bool:
     return False
 
 
-def measure(source: Path, excludes: list[str]) -> tuple[int, int]:
-    """(Byte-Summe, Dateianzahl) des zu sichernden Baums."""
+def measure(source: Path, excludes: list[str]) -> dict[str, int]:
+    """Groesse des zu sichernden Baums - und was die Dateimuster herausnehmen.
+
+    Der ausgefilterte Anteil wird mitgezaehlt, damit sich der Unterschied zu
+    ``du -sh`` erklaeren laesst. Ohne diese Zahl wirkt ein Backup, das z. B.
+    Plex' knapp ein Gigabyte grossen Cache-Ordner auslaesst, schlicht falsch.
+    """
     if source.is_file():
-        return source.stat().st_size, 1
-    total = 0
-    count = 0
+        return {"bytes": source.stat().st_size, "files": 1,
+                "excluded_bytes": 0, "excluded_files": 0}
+
+    total = count = skipped_bytes = skipped_files = 0
+
+    def _add_skipped(path: str) -> None:
+        nonlocal skipped_bytes, skipped_files
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return
+        skipped_bytes += st.st_size
+        skipped_files += 1
+
     for root, dirs, files in os.walk(source, onerror=lambda _e: None):
         rel_root = os.path.relpath(root, source)
-        dirs[:] = [d for d in dirs
-                   if not _excluded(os.path.normpath(os.path.join(rel_root, d)), excludes)]
+        keep_dirs = []
+        for name in dirs:
+            if _excluded(os.path.normpath(os.path.join(rel_root, name)), excludes):
+                # Ganzer Ast faellt weg - Inhalt fuer die Statistik trotzdem zaehlen
+                for sub_root, _sub_dirs, sub_files in os.walk(os.path.join(root, name),
+                                                             onerror=lambda _e: None):
+                    for sub in sub_files:
+                        _add_skipped(os.path.join(sub_root, sub))
+            else:
+                keep_dirs.append(name)
+        dirs[:] = keep_dirs
+
         for filename in files:
             rel = os.path.normpath(os.path.join(rel_root, filename))
-            if _excluded(rel, excludes):
-                continue
             full = os.path.join(root, filename)
+            if _excluded(rel, excludes):
+                _add_skipped(full)
+                continue
             try:
                 st = os.lstat(full)
             except OSError:
@@ -108,7 +135,9 @@ def measure(source: Path, excludes: list[str]) -> tuple[int, int]:
                 continue
             total += st.st_size
             count += 1
-    return total, count
+
+    return {"bytes": total, "files": count,
+            "excluded_bytes": skipped_bytes, "excluded_files": skipped_files}
 
 
 def pack(source: Path, dest: Path, *, compression: str = "zstd", level: int = 6,
@@ -118,21 +147,22 @@ def pack(source: Path, dest: Path, *, compression: str = "zstd", level: int = 6,
     excludes = excludes or []
     compression = choose_compression(compression)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    total_bytes, total_files = measure(source, excludes)
+    stats = measure(source, excludes)
     base = source.name if source.is_file() else "."
 
     tmp = dest.with_suffix(dest.suffix + ".part")
     try:
         return _pack_into(tmp, dest, source, base, excludes, compression, level,
-                          total_bytes, total_files, progress, cancelled)
+                          stats, progress, cancelled)
     except BaseException:
         tmp.unlink(missing_ok=True)   # keine halben Archive hinterlassen
         raise
 
 
 def _pack_into(tmp: Path, dest: Path, source: Path, base: str, excludes: list[str],
-               compression: str, level: int, total_bytes: int, total_files: int,
+               compression: str, level: int, stats: dict[str, int],
                progress: ProgressCb, cancelled: CancelCb) -> dict[str, Any]:
+    total_bytes = stats["bytes"]
     done_bytes = 0
     files_added = 0
     skipped: list[str] = []
@@ -191,7 +221,9 @@ def _pack_into(tmp: Path, dest: Path, source: Path, base: str, excludes: list[st
         "source_bytes": total_bytes,
         "archive_bytes": archive_bytes,
         "files": files_added,
-        "expected_files": total_files,
+        "expected_files": stats["files"],
+        "excluded_bytes": stats["excluded_bytes"],
+        "excluded_files": stats["excluded_files"],
         "sha256": digest,
         "compression": compression,
         "skipped": skipped[:50],

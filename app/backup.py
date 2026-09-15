@@ -36,6 +36,7 @@ def plan(container_name: str, options: dict[str, Any] | None = None) -> dict[str
     artifacts = _collect_artifacts(attrs, options, include_skipped=True)
     excludes = options["exclude_patterns"]
     total = 0
+    total_excluded = 0
     for art in artifacts:
         if not art["include"]:
             # Datenpfade bewusst nicht vermessen: ein Medien-Share zu durchlaufen
@@ -45,13 +46,18 @@ def plan(container_name: str, options: dict[str, Any] | None = None) -> dict[str
             continue
         source = Path(art["source"])
         if source.exists():
-            size, files = archive.measure(source, excludes)
-            art["estimated_bytes"] = size
-            art["files"] = files
-            total += size
+            stats = archive.measure(source, excludes)
+            art["estimated_bytes"] = stats["bytes"]
+            art["files"] = stats["files"]
+            art["excluded_bytes"] = stats["excluded_bytes"]
+            art["excluded_files"] = stats["excluded_files"]
+            total += stats["bytes"]
+            total_excluded += stats["excluded_bytes"]
         else:
             art["estimated_bytes"] = 0
             art["files"] = 0
+            art["excluded_bytes"] = 0
+            art["excluded_files"] = 0
             art["missing"] = True
     template = unraid.read_template(container_name)
     return {
@@ -59,6 +65,8 @@ def plan(container_name: str, options: dict[str, Any] | None = None) -> dict[str
         "artifacts": [a for a in artifacts if a["include"]],
         "skipped": [a for a in artifacts if not a["include"]],
         "estimated_bytes": total,
+        "excluded_by_patterns_bytes": total_excluded,
+        "exclude_patterns": excludes,
         "mount_scope": options["mount_scope"],
         "template": {"present": bool(template), "file": template[0] if template else None,
                      "will_generate": not template and options["generate_missing_template"]},
@@ -343,7 +351,7 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
 
             limit_gb = opts["max_artifact_gb"]
             if limit_gb:
-                size, _ = archive.measure(source, opts["exclude_patterns"])
+                size = archive.measure(source, opts["exclude_patterns"])["bytes"]
                 if size > limit_gb * 1024 ** 3:
                     ctx.log(f"{label} - {_human(size)} ueberschreitet Limit "
                             f"({limit_gb} GB), uebersprungen", "warn")
@@ -381,6 +389,10 @@ def run(ctx: JobContext, container_name: str, *, trigger: str = "manual",
                 if result["source_bytes"] else 100
             ctx.log(f"{label}: {result['files']} Dateien, {_human(result['source_bytes'])} "
                     f"-> {_human(result['archive_bytes'])} ({ratio:.0f}%)")
+            if result.get("excluded_bytes"):
+                ctx.log(f"{label}: {_human(result['excluded_bytes'])} in "
+                        f"{result['excluded_files']} Datei(en) durch Dateimuster "
+                        f"ausgelassen (z. B. Cache-Ordner)")
             if result["skipped_count"]:
                 ctx.log(f"{label}: {result['skipped_count']} Eintraege uebersprungen", "warn")
             saved.append({**art, "file": filename, "skipped": False, **result})
